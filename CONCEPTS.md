@@ -109,11 +109,26 @@ Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm b
 
 See: system prompt in `agent.py:run_agent`
 
+## 12. Streaming responses + TTFT
+
+Calling `ollama.chat(..., stream=True)` returns an iterator of partial chunks instead of one fat response. Each chunk is a `ChatResponse` with `message.content` containing whatever new text was generated since the previous chunk. The final chunk carries `prompt_eval_count`, `eval_count`, and durations.
+
+Two UX wins:
+1. **No more dead terminal.** The first content token appears in 0.5-2s; the model then streams into the display. Subjectively the 7b feels 3× faster even though the total duration is identical.
+2. **TTFT (time-to-first-token) becomes visible** — distinct from total duration. TTFT tells you "how long until the user sees *something*." On a tool-calling turn, TTFT of the final answer includes the tool round-trip, which is a useful latency attribution.
+
+Implementation notes:
+- Inside `run_agent`, accumulate chunk content into a buffer while streaming to `console.print(chunk, end="")` for live rendering
+- Stop the spinner on the first content token and print the `Mia ›` prefix once
+- Tool calls arrive together (not token-by-token), typically with empty content — so tool-only turns bypass streaming naturally
+- `ttft_ms` logged per call; it's `null` for tool-only turns since no content ever appeared
+
+See: `agent.py:run_agent`
+
 ---
 
 ## To cover next
 
-- [ ] Streaming responses (token-by-token output)
 - [ ] System prompt as configuration, not hardcode
 - [ ] Multi-provider abstraction (OpenAI / Anthropic / Ollama)
 - [ ] Tool-call error handling (model calls a tool that raises)
