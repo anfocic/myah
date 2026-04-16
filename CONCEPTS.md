@@ -93,6 +93,14 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 
 See: `agent.py:log_response`
 
+## 10. Models don't know what they are
+
+Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm built by Anthropic" (or OpenAI, depending on which corpus leaked hardest into its training data). The model has no introspection — it just pattern-matches on text it's seen.
+
+**Identity lives in the system prompt.** If you want the model to correctly say "I'm Mia, running on qwen2.5 via Ollama," you have to tell it that, and you usually have to explicitly negate the false answers ("You were NOT built by OpenAI or Anthropic") because the training-data priors are strong.
+
+See: system prompt in `agent.py:run_agent`
+
 ---
 
 ## To cover next
