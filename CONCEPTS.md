@@ -93,7 +93,15 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 
 See: `agent.py:log_response`
 
-## 10. Models don't know what they are
+## 10. Spinner feedback during blocking calls
+
+`ollama.chat` is synchronous and can sit for 5-30s on a tool-heavy turn. Without feedback the terminal looks dead. `rich.console.Console.status()` opens a context manager that shows a spinner with a live-updating text line, refreshed in a background thread while the main thread blocks on the model.
+
+Pattern: pass the `status` handle into the agent loop so it can report *what* it's currently doing — `Thinking...`, `Running read_file (1/2)`, `Summarizing dropped turns...` — along with a cumulative token count and elapsed seconds.
+
+See: `agent.py:status_line`, `main.py` REPL loop
+
+## 11. Models don't know what they are
 
 Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm built by Anthropic" (or OpenAI, depending on which corpus leaked hardest into its training data). The model has no introspection — it just pattern-matches on text it's seen.
 
