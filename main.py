@@ -92,7 +92,8 @@ if __name__ == "__main__":
             "[yellow]Thinking...[/yellow]", spinner="dots"
         ) as status:
             response, history, ctx_used = run_agent(
-                user_input, tools, execute_tool, history, status=status
+                user_input, tools, execute_tool, history,
+                status=status, console=console,
             )
             history, dropped = trim_history(history, ctx_used, NUM_CTX)
             if dropped:
@@ -103,6 +104,7 @@ if __name__ == "__main__":
                         time.time() - start,
                     )
                 )
+                status.start()  # agent may have stopped it while streaming
                 summary = summarize_dropped(dropped)
                 if summary:
                     history.insert(
@@ -114,7 +116,8 @@ if __name__ == "__main__":
                     )
 
         tag = ctx_tag(ctx_used, NUM_CTX)
-        console.print(f"\n[bold cyan]Mia[/bold cyan] {tag} [dim]›[/dim] {response}\n")
+        elapsed = time.time() - start
+        console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]\n")
         if dropped:
             console.print(
                 f"[dim yellow]↳ trimmed {len(dropped) // 2} old turn(s), summarized into context[/dim yellow]\n"
