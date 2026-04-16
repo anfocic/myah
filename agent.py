@@ -1,7 +1,33 @@
 # agent.py
+import json
+import time
+from pathlib import Path
+
 import ollama
 
 from config import MODEL_NAME, NUM_CTX
+
+LOG_FILE = Path("logs/agent.jsonl")
+
+
+def log_response(response, messages: list) -> None:
+    """Append a single-line JSON record per ollama.chat call for post-hoc study."""
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    entry = {
+        "ts": time.time(),
+        "prompt_eval_count": getattr(response, "prompt_eval_count", None),
+        "eval_count": getattr(response, "eval_count", None),
+        "eval_duration_ms": (getattr(response, "eval_duration", 0) or 0) // 1_000_000,
+        "total_duration_ms": (getattr(response, "total_duration", 0) or 0) // 1_000_000,
+        "content": response.message.content,
+        "tool_calls": [
+            {"name": tc.function.name, "arguments": tc.function.arguments}
+            for tc in (response.message.tool_calls or [])
+        ],
+        "messages_in_prompt": len(messages),
+    }
+    with LOG_FILE.open("a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
 
 
 def estimate_tokens(messages: list) -> int:
@@ -78,6 +104,7 @@ def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
             tools=tools,
             options={"num_ctx": NUM_CTX},
         )
+        log_response(response, messages)
 
         # Ollama returns the real prompt token count; fall back to estimate
         ctx_used = getattr(response, "prompt_eval_count", None) or estimate_tokens(messages)
