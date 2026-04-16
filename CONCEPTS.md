@@ -125,6 +125,20 @@ Implementation notes:
 
 See: `agent.py:run_agent`
 
+## 13. Small models hallucinate library APIs
+
+Asked qwen2.5:7b to critique this project. It suggested "improvements" using:
+
+- `response['usage']['total_tokens']` — that's **OpenAI's** response shape. Ollama returns `prompt_eval_count` as a top-level attribute.
+- `tool_call.schema`, `tool_call.function_name` — invented. Ollama uses `tool_call.function.name` and `tool_call.function.arguments`.
+- A "new" `manage_context_window` helper that reimplements the `trim_history` + `summarize_dropped` it had literally just been shown.
+
+The model sounded confident and structurally coherent, but the code was wrong in ways that would only be obvious to someone who's read the Ollama docs.
+
+**Lesson:** small local models are fine as the *subject* of a harness — they'll happily play agent, call tools, and let you build around them. They are **not** a reliable *code reviewer* for the stack they run on. Their training data is dominated by OpenAI's API shape, so anything provider-specific gets confabulated.
+
+Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advice about the harness itself.
+
 ---
 
 ## To cover next
