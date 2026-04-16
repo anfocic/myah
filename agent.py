@@ -10,6 +10,25 @@ from config import MODEL_NAME, NUM_CTX
 LOG_FILE = Path("logs/agent.jsonl")
 
 
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def status_line(
+    verb: str,
+    tokens: int,
+    elapsed: float,
+    progress: tuple[int, int] | None = None,
+) -> str:
+    """Compose the spinner status line: verb · progress · tokens · elapsed."""
+    parts = [f"[yellow]{verb}[/yellow]"]
+    if progress:
+        parts.append(f"[dim]({progress[0]}/{progress[1]})[/dim]")
+    parts.append(f"[dim]· ↑ {_fmt_tokens(tokens)} tokens[/dim]")
+    parts.append(f"[dim]· {elapsed:.0f}s[/dim]")
+    return " ".join(parts)
+
+
 def log_response(response, messages: list) -> None:
     """Append a single-line JSON record per ollama.chat call for post-hoc study."""
     LOG_FILE.parent.mkdir(exist_ok=True)
@@ -74,7 +93,13 @@ def summarize_dropped(dropped: list) -> str:
     return (response.message.content or "").strip()
 
 
-def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
+def run_agent(
+    user_input: str,
+    tools: list,
+    execute_tool,
+    history: list = [],
+    status=None,
+):
     messages = (
         [
             {
@@ -95,9 +120,13 @@ def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
         + [{"role": "user", "content": user_input}]
     )
 
+    start = time.time()
     ctx_used = estimate_tokens(messages)
 
     while True:
+        if status:
+            status.update(status_line("Thinking...", ctx_used, time.time() - start))
+
         response = ollama.chat(
             model=MODEL_NAME,
             messages=messages,
@@ -113,7 +142,17 @@ def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
 
         if message.tool_calls:
             messages.append({"role": "assistant", "content": message.content or ""})
-            for tool_call in message.tool_calls:
+            total = len(message.tool_calls)
+            for i, tool_call in enumerate(message.tool_calls, start=1):
+                if status:
+                    status.update(
+                        status_line(
+                            f"Running {tool_call.function.name}",
+                            ctx_used,
+                            time.time() - start,
+                            progress=(i, total),
+                        )
+                    )
                 result = execute_tool(
                     tool_call.function.name, tool_call.function.arguments
                 )
