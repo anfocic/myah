@@ -80,7 +80,20 @@ See: `agent.py:summarize_dropped`
 
 See: `main.py:ctx_tag`
 
-## 9. Models don't know what they are
+## 9. Debug logging
+
+Every `ollama.chat` call is appended as one JSON line to `logs/agent.jsonl`. Fields captured:
+
+- `prompt_eval_count` / `eval_count` — real input/output token counts
+- `eval_duration_ms` / `total_duration_ms` — model vs. round-trip latency
+- `content` + `tool_calls` — what the model actually returned
+- `messages_in_prompt` — how big the prompt was
+
+JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`, and unlike a single JSON array it doesn't require rewriting the whole file on each write.
+
+See: `agent.py:log_response`
+
+## 10. Models don't know what they are
 
 Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm built by Anthropic" (or OpenAI, depending on which corpus leaked hardest into its training data). The model has no introspection — it just pattern-matches on text it's seen.
 
