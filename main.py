@@ -1,7 +1,9 @@
 # main.py
+import time
+
 from rich.console import Console
 
-from agent import run_agent, summarize_dropped, trim_history
+from agent import status_line, run_agent, summarize_dropped, trim_history
 from config import NUM_CTX
 from tools.files import read_file, write_file
 from tools.utils import get_current_time
@@ -85,22 +87,38 @@ if __name__ == "__main__":
         user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
         if user_input.strip().lower() == "exit":
             break
-        response, history, ctx_used = run_agent(
-            user_input, tools, execute_tool, history
-        )
-        tag = ctx_tag(ctx_used, NUM_CTX)
-        console.print(f"\n[bold cyan]Mia[/bold cyan] {tag} [dim]›[/dim] {response}\n")
-        history, dropped = trim_history(history, ctx_used, NUM_CTX)
-        if dropped:
-            summary = summarize_dropped(dropped)
-            if summary:
-                history.insert(
-                    0,
-                    {
-                        "role": "system",
-                        "content": f"Summary of earlier conversation: {summary}",
-                    },
+        start = time.time()
+        with console.status(
+            "[yellow]Thinking...[/yellow]", spinner="dots"
+        ) as status:
+            response, history, ctx_used = run_agent(
+                user_input, tools, execute_tool, history,
+                status=status, console=console,
+            )
+            history, dropped = trim_history(history, ctx_used, NUM_CTX)
+            if dropped:
+                status.update(
+                    status_line(
+                        "Summarizing dropped turns...",
+                        ctx_used,
+                        time.time() - start,
+                    )
                 )
+                status.start()  # agent may have stopped it while streaming
+                summary = summarize_dropped(dropped)
+                if summary:
+                    history.insert(
+                        0,
+                        {
+                            "role": "system",
+                            "content": f"Summary of earlier conversation: {summary}",
+                        },
+                    )
+
+        tag = ctx_tag(ctx_used, NUM_CTX)
+        elapsed = time.time() - start
+        console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]\n")
+        if dropped:
             console.print(
                 f"[dim yellow]↳ trimmed {len(dropped) // 2} old turn(s), summarized into context[/dim yellow]\n"
             )

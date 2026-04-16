@@ -93,7 +93,15 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 
 See: `agent.py:log_response`
 
-## 10. Models don't know what they are
+## 10. Spinner feedback during blocking calls
+
+`ollama.chat` is synchronous and can sit for 5-30s on a tool-heavy turn. Without feedback the terminal looks dead. `rich.console.Console.status()` opens a context manager that shows a spinner with a live-updating text line, refreshed in a background thread while the main thread blocks on the model.
+
+Pattern: pass the `status` handle into the agent loop so it can report *what* it's currently doing — `Thinking...`, `Running read_file (1/2)`, `Summarizing dropped turns...` — along with a cumulative token count and elapsed seconds.
+
+See: `agent.py:status_line`, `main.py` REPL loop
+
+## 11. Models don't know what they are
 
 Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm built by Anthropic" (or OpenAI, depending on which corpus leaked hardest into its training data). The model has no introspection — it just pattern-matches on text it's seen.
 
@@ -101,7 +109,23 @@ Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm b
 
 See: system prompt in `agent.py:run_agent`
 
-## 11. Small models hallucinate library APIs
+## 12. Streaming responses + TTFT
+
+Calling `ollama.chat(..., stream=True)` returns an iterator of partial chunks instead of one fat response. Each chunk is a `ChatResponse` with `message.content` containing whatever new text was generated since the previous chunk. The final chunk carries `prompt_eval_count`, `eval_count`, and durations.
+
+Two UX wins:
+1. **No more dead terminal.** The first content token appears in 0.5-2s; the model then streams into the display. Subjectively the 7b feels 3× faster even though the total duration is identical.
+2. **TTFT (time-to-first-token) becomes visible** — distinct from total duration. TTFT tells you "how long until the user sees *something*." On a tool-calling turn, TTFT of the final answer includes the tool round-trip, which is a useful latency attribution.
+
+Implementation notes:
+- Inside `run_agent`, accumulate chunk content into a buffer while streaming to `console.print(chunk, end="")` for live rendering
+- Stop the spinner on the first content token and print the `Mia ›` prefix once
+- Tool calls arrive together (not token-by-token), typically with empty content — so tool-only turns bypass streaming naturally
+- `ttft_ms` logged per call; it's `null` for tool-only turns since no content ever appeared
+
+See: `agent.py:run_agent`
+
+## 13. Small models hallucinate library APIs
 
 Asked qwen2.5:7b to critique this project. It suggested "improvements" using:
 
@@ -119,7 +143,6 @@ Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advic
 
 ## To cover next
 
-- [ ] Streaming responses (token-by-token output)
 - [ ] System prompt as configuration, not hardcode
 - [ ] Multi-provider abstraction (OpenAI / Anthropic / Ollama)
 - [ ] Tool-call error handling (model calls a tool that raises)
