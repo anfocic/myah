@@ -10,19 +10,55 @@ from config import MODEL_NAME, NUM_CTX
 LOG_FILE = Path("logs/agent.jsonl")
 
 
-def log_response(response, messages: list) -> None:
-    """Append a single-line JSON record per ollama.chat call for post-hoc study."""
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def status_line(
+    verb: str,
+    tokens: int,
+    elapsed: float,
+    progress: tuple[int, int] | None = None,
+) -> str:
+    """Compose the spinner status line: verb · progress · tokens · elapsed."""
+    parts = [f"[yellow]{verb}[/yellow]"]
+    if progress:
+        parts.append(f"[dim]({progress[0]}/{progress[1]})[/dim]")
+    parts.append(f"[dim]· ↑ {_fmt_tokens(tokens)} tokens[/dim]")
+    parts.append(f"[dim]· {elapsed:.0f}s[/dim]")
+    return " ".join(parts)
+
+
+def log_response(
+    response,
+    messages: list,
+    *,
+    content_override: str | None = None,
+    tool_calls_override: list | None = None,
+    ttft_ms: int | None = None,
+) -> None:
+    """Append a single-line JSON record per ollama.chat call for post-hoc study.
+
+    Streaming mode builds content + tool_calls from chunks, so pass them in via
+    the `*_override` args. Non-streaming reads them from `response.message`.
+    """
     LOG_FILE.parent.mkdir(exist_ok=True)
+    tool_calls = (
+        tool_calls_override
+        if tool_calls_override is not None
+        else (response.message.tool_calls or [])
+    )
     entry = {
         "ts": time.time(),
         "prompt_eval_count": getattr(response, "prompt_eval_count", None),
         "eval_count": getattr(response, "eval_count", None),
         "eval_duration_ms": (getattr(response, "eval_duration", 0) or 0) // 1_000_000,
         "total_duration_ms": (getattr(response, "total_duration", 0) or 0) // 1_000_000,
-        "content": response.message.content,
+        "ttft_ms": ttft_ms,
+        "content": content_override if content_override is not None else response.message.content,
         "tool_calls": [
             {"name": tc.function.name, "arguments": tc.function.arguments}
-            for tc in (response.message.tool_calls or [])
+            for tc in tool_calls
         ],
         "messages_in_prompt": len(messages),
     }
@@ -74,7 +110,14 @@ def summarize_dropped(dropped: list) -> str:
     return (response.message.content or "").strip()
 
 
-def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
+def run_agent(
+    user_input: str,
+    tools: list,
+    execute_tool,
+    history: list = [],
+    status=None,
+    console=None,
+):
     messages = (
         [
             {
@@ -95,32 +138,89 @@ def run_agent(user_input: str, tools: list, execute_tool, history: list = []):
         + [{"role": "user", "content": user_input}]
     )
 
+    start = time.time()
     ctx_used = estimate_tokens(messages)
 
     while True:
-        response = ollama.chat(
+        if status:
+            status.update(status_line("Thinking...", ctx_used, time.time() - start))
+            status.start()  # idempotent; re-arms spinner after a streaming phase
+
+        content_parts: list[str] = []
+        tool_calls: list = []
+        final_chunk = None
+        first_content_seen = False
+        ttft_ms: int | None = None
+
+        for chunk in ollama.chat(
             model=MODEL_NAME,
             messages=messages,
             tools=tools,
             options={"num_ctx": NUM_CTX},
+            stream=True,
+        ):
+            final_chunk = chunk
+            msg = chunk.message
+
+            if msg.content:
+                if not first_content_seen:
+                    first_content_seen = True
+                    ttft_ms = int((time.time() - start) * 1000)
+                    if status:
+                        status.stop()
+                    if console:
+                        console.print(
+                            "\n[bold cyan]Mia[/bold cyan] [dim]›[/dim] ",
+                            end="",
+                            highlight=False,
+                        )
+                content_parts.append(msg.content)
+                if console:
+                    console.print(msg.content, end="", highlight=False)
+
+            if msg.tool_calls:
+                tool_calls.extend(msg.tool_calls)
+
+        if first_content_seen and console:
+            console.print()  # close out the streamed line with a newline
+
+        content = "".join(content_parts)
+        log_response(
+            final_chunk,
+            messages,
+            content_override=content,
+            tool_calls_override=tool_calls,
+            ttft_ms=ttft_ms,
         )
-        log_response(response, messages)
 
-        # Ollama returns the real prompt token count; fall back to estimate
-        ctx_used = getattr(response, "prompt_eval_count", None) or estimate_tokens(messages)
+        ctx_used = (
+            getattr(final_chunk, "prompt_eval_count", None) or estimate_tokens(messages)
+        )
 
-        message = response.message
-
-        if message.tool_calls:
-            messages.append({"role": "assistant", "content": message.content or ""})
-            for tool_call in message.tool_calls:
+        if tool_calls:
+            messages.append({"role": "assistant", "content": content})
+            total = len(tool_calls)
+            for i, tool_call in enumerate(tool_calls, start=1):
+                if status:
+                    status.update(
+                        status_line(
+                            f"Running {tool_call.function.name}",
+                            ctx_used,
+                            time.time() - start,
+                            progress=(i, total),
+                        )
+                    )
                 result = execute_tool(
                     tool_call.function.name, tool_call.function.arguments
                 )
                 messages.append({"role": "tool", "content": str(result)})
         else:
-            if not message.content:
-                message.content = "Done."
+            if not content:
+                content = "Done."
+                if console:
+                    console.print(
+                        f"\n[bold cyan]Mia[/bold cyan] [dim]›[/dim] {content}"
+                    )
             history.append({"role": "user", "content": user_input})
-            history.append({"role": "assistant", "content": message.content})
-            return message.content, history, ctx_used
+            history.append({"role": "assistant", "content": content})
+            return content, history, ctx_used
