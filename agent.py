@@ -5,7 +5,7 @@ from pathlib import Path
 
 import ollama
 
-from config import MODEL_NAME, NUM_CTX
+from config import MODEL_NAME, NUM_CTX, STREAM_DELAY_MS
 
 LOG_FILE = Path("logs/agent.jsonl")
 
@@ -177,6 +177,8 @@ def run_agent(
                 content_parts.append(msg.content)
                 if console:
                     console.print(msg.content, end="", highlight=False)
+                    if STREAM_DELAY_MS:
+                        time.sleep(STREAM_DELAY_MS / 1000)
 
             if msg.tool_calls:
                 tool_calls.extend(msg.tool_calls)
