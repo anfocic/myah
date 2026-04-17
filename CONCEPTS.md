@@ -276,6 +276,23 @@ The surprise: the *import* is the feature. Python's `input()` silently upgrades 
 
 See: `agent.py:run_agent` (try/except block), `main.py:_load_input_history`
 
+## 22. Control plane vs data plane — slash commands
+
+Three inputs hit the REPL: `hello`, `/clear`, `exit`. Two of them never reach the model. That split — what the harness handles vs. what the LLM sees — is the **control plane / data plane** split, and it's one of the most important structural ideas in an agent harness.
+
+- **Data plane**: tokens flowing to/from the model. User text, tool calls, tool results, assistant replies. Every byte costs latency + tokens.
+- **Control plane**: harness-local operations with zero model involvement. `/clear`, `/help`, `/context`, `exit`, the permission prompt's y/n. Instant, free, deterministic.
+
+`main.py:handle_slash` dispatches any input starting with `/` against a `SLASH_COMMANDS` dict: `{name: (handler, description)}`. If it matches, the handler mutates the REPL's `state` dict (history list, last `ctx_used`) and `continue`s the loop — the model never saw a turn happen. `/help` reads its own registry to render the list, so adding a new command only requires touching the dict.
+
+Two design choices worth naming:
+
+1. **`state` as a single dict, not separate locals.** `trim_history` rebinds its input list (`history = history[2:]`), so if `main.py` kept a local `history` variable *and* stashed a reference in `state`, the two would silently drift after the first trim — `/clear` would clear the stale one while the REPL kept using the fresh one. Making `state["history"]` the single source of truth eliminates the bug class entirely. The cost is `state["history"]` everywhere instead of `history` — cheap.
+
+2. **Slash ≠ tool.** The model could call a hypothetical `clear_history` tool and get the same effect, but that would be bad design: `/clear` is a *user* action, not a *reasoning* action. Separating them means the model can't erase context on itself mid-plan, and the user never has to wait for a model round-trip to reset. The tool layer is for things the model needs to reason *with*; the slash layer is for things the user does *to* the harness. (Separately, a `harness_info` tool for mid-turn introspection is still useful — that's data-plane. Different job.)
+
+See: `main.py:SLASH_COMMANDS`, `main.py:handle_slash`
+
 ---
 
 ## To cover next
