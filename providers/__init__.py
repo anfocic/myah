@@ -17,12 +17,14 @@ def build_provider(name: str, model: str) -> Provider:
     from config/env — only the model name changes per call."""
     if name == "ollama":
         from config import OLLAMA_BASE_URL
+
         from .ollama_adapter import OllamaProvider
 
         return OllamaProvider(model, OLLAMA_BASE_URL)
 
     if name == "openai-compat":
         from config import OPENAI_COMPAT_BASE_URL
+
         from .openai_compat import OpenAICompatProvider
 
         return OpenAICompatProvider(
@@ -79,6 +81,7 @@ def list_ollama_models() -> list[str]:
     caller prints a hint rather than crashing."""
     try:
         import ollama
+
         from config import OLLAMA_BASE_URL
         client = ollama.Client(host=OLLAMA_BASE_URL) if OLLAMA_BASE_URL else ollama
         resp = client.list()

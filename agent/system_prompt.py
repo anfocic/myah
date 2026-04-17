@@ -8,11 +8,10 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-from providers import get_active_provider
-
 # Imported for the plan-mode system prompt's "read-only tools" list.
 # Defined in agent/__init__.py and also used by agent/loop.py's tool gate.
 from agent import READ_ONLY_TOOLS
+from providers import get_active_provider
 
 
 def _git(*args: str) -> str | None:
