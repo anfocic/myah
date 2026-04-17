@@ -20,3 +20,8 @@ logs/
 # Editor
 .vscode/
 .idea/
+
+# Personal study notes — intentionally not committed
+STUDY.md
+concepts/
+CONCEPTS-*.md

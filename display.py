@@ -18,7 +18,6 @@ from rich.syntax import Syntax
 
 from repl.console import console
 
-
 # Map file extensions to Pygments language names that rich.syntax knows.
 # Unknown extensions fall back to plain text via the None case.
 _EXT_TO_LEXER = {
@@ -188,7 +187,7 @@ def on_tool_end(name: str, args: dict, result: str, ok: bool) -> None:
             line = line[:77] + "..."
         console.print(f"  [dim]↳ {line}[/dim]")
     else:
-        first = next((l for l in lines if l.strip()), "")
+        first = next((ln for ln in lines if ln.strip()), "")
         if len(first) > 80:
             first = first[:77] + "..."
         console.print(f"  [dim]↳ {n} lines · {first}[/dim]")

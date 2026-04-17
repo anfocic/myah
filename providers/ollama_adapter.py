@@ -5,7 +5,7 @@ Thin by design: the native shape (`chunk.message.content`,
 translated into the neutral dataclasses in `base.py`. Nothing above this
 file sees Ollama-specific attributes."""
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 

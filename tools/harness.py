@@ -1,7 +1,8 @@
 import os
 import subprocess
+from collections.abc import Mapping
 from datetime import date
-from typing import Any, Mapping
+from typing import Any
 
 from config import NUM_CTX
 from providers import get_active_provider

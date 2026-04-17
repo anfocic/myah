@@ -5,8 +5,9 @@ which backend it's talking to. Adapters translate their provider's native
 streaming shape into `StreamChunk`s with the contract described below.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator, Protocol
+from typing import Protocol
 
 
 @dataclass
