@@ -1,6 +1,8 @@
 # tools/files.py
 import os
 
+from security import is_within_cwd, refuse_outside_cwd
+
 DEFAULT_READ_LINES = 1000
 MAX_LINE_CHARS = 500
 
@@ -17,6 +19,8 @@ def read_file(path: str, offset: int = 1, limit: int | None = None):
     back to grep and hallucinate). Individual lines over MAX_LINE_CHARS are
     truncated so one pathological log line can't blow the context window.
     """
+    if not is_within_cwd(path):
+        return refuse_outside_cwd(path)
     try:
         with open(os.path.expanduser(path)) as f:
             all_lines = f.readlines()
@@ -55,6 +59,8 @@ def read_file(path: str, offset: int = 1, limit: int | None = None):
 
 
 def write_file(path: str, content: str):
+    if not is_within_cwd(path):
+        return refuse_outside_cwd(path)
     try:
         with open(os.path.expanduser(path), "w") as f:
             f.write(content)
@@ -69,6 +75,8 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
     Mirrors the Claude Code `Edit` tool: the model must produce an `old_string`
     that uniquely identifies the target, otherwise the edit is rejected.
     """
+    if not is_within_cwd(path):
+        return refuse_outside_cwd(path)
     try:
         expanded = os.path.expanduser(path)
         with open(expanded) as f:
