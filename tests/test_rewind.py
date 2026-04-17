@@ -1,7 +1,8 @@
 """/rewind behavior: snapshot stack semantics, clamping, /clear interaction."""
 from collections import deque
 
-from main import REWIND_MAX_SNAPSHOTS, cmd_clear, cmd_rewind
+from repl.commands import cmd_clear, cmd_rewind
+from repl.state import REWIND_MAX_SNAPSHOTS
 
 
 def _history(n_turns: int) -> list[dict]:
@@ -52,7 +53,7 @@ def test_rewind_rejects_non_integer_arg(state):
 def test_clear_wipes_snapshots_too(state, tmp_path, monkeypatch):
     # /clear must drop the snapshot stack or /rewind would resurrect the
     # history the user just asked to nuke.
-    monkeypatch.setattr("main.SESSION_FILE", str(tmp_path / "session.json"))
+    monkeypatch.setattr("repl.persistence.SESSION_FILE", str(tmp_path / "session.json"))
     state["history"] = _history(2)
     state["snapshots"].append(_history(1))
 

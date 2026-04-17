@@ -1,6 +1,6 @@
 """handle_slash dispatch: uniform (state, arg='') signature; unknown
 commands reported without crash; commands with no-arg ignore stray args."""
-from main import handle_slash
+from repl.commands import handle_slash
 
 
 def test_unknown_command_returns_true_without_crash(state):
