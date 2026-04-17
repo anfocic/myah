@@ -7,7 +7,7 @@ import time
 from rich.console import Console
 
 from agent import status_line, run_agent, summarize_dropped, trim_history
-from config import NUM_CTX
+from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
@@ -243,20 +243,84 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
     return f"[dim]\\[[/dim][{color}]{pct:.0%}[/{color}][dim]][/dim]"
 
 
+# ── Slash commands ────────────────────────────────────────────────────────────
+# Handled by the REPL before the turn reaches the model. They mutate shared
+# REPL state via the `state` dict (history list, last ctx_used). Keeping them
+# out of the tool layer teaches the control-plane / data-plane split: the
+# model never sees these — they're harness UX.
+
+def cmd_help(state):
+    lines = ["[bold]Commands:[/bold]"]
+    for name, (_, desc) in SLASH_COMMANDS.items():
+        lines.append(f"  [cyan]{name}[/cyan] — {desc}")
+    lines.append("  [cyan]exit[/cyan] — quit")
+    console.print("\n".join(lines))
+
+
+def cmd_clear(state):
+    state["history"].clear()
+    state["ctx_used"] = 0
+    console.print("[dim]↳ history cleared[/dim]")
+
+
+def cmd_context(state):
+    ctx = state["ctx_used"]
+    turns = len(state["history"]) // 2
+    tag = ctx_tag(ctx, NUM_CTX)
+    console.print(
+        f"[bold]model:[/bold] {MODEL_NAME} [dim]({MODEL_PROVIDER})[/dim]\n"
+        f"[bold]num_ctx:[/bold] {NUM_CTX}\n"
+        f"[bold]ctx used:[/bold] {ctx} {tag}\n"
+        f"[bold]history turns:[/bold] {turns}\n"
+        f"[bold]tools:[/bold] {', '.join(t['function']['name'] for t in tools)}"
+    )
+
+
+SLASH_COMMANDS: dict = {
+    "/help": (cmd_help, "show this list"),
+    "/clear": (cmd_clear, "reset conversation history"),
+    "/context": (cmd_context, "show context window usage + harness info"),
+}
+
+
+def handle_slash(user_input: str, state: dict) -> bool:
+    """If user_input is a slash command, run it and return True. Else False."""
+    cmd = user_input.strip().split(maxsplit=1)[0]
+    if not cmd.startswith("/"):
+        return False
+    entry = SLASH_COMMANDS.get(cmd)
+    if entry is None:
+        console.print(f"[dim]↳ unknown command: {cmd} (try /help)[/dim]")
+        return True
+    handler, _ = entry
+    handler(state)
+    return True
+
+
 if __name__ == "__main__":
     _load_input_history()
     console.print(
-        "[bold]Agent ready.[/bold] Type [italic dim]exit[/italic dim] to quit.\n"
+        "[bold]Agent ready.[/bold] "
+        "Type [italic dim]/help[/italic dim] for commands, "
+        "[italic dim]exit[/italic dim] to quit.\n"
     )
-    history = []
+    # state is the single source of truth so slash commands always see the
+    # latest values. trim_history rebinds the list, so we can't keep a
+    # separate local `history` without drift.
+    state: dict = {"history": [], "ctx_used": 0}
     while True:
         try:
             user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Exiting.[/dim]")
             break
+        if not user_input.strip():
+            continue
         if user_input.strip().lower() == "exit":
             break
+        if handle_slash(user_input, state):
+            console.print()
+            continue
         start = time.time()
         try:
             with console.status(
@@ -265,24 +329,26 @@ if __name__ == "__main__":
                 def perm_check(name, args):
                     return check_permission(console, status, name, args)
 
-                response, history, ctx_used = run_agent(
-                    user_input, tools, execute_tool, history,
+                response, state["history"], state["ctx_used"] = run_agent(
+                    user_input, tools, execute_tool, state["history"],
                     status=status, console=console,
                     permission_check=perm_check,
                 )
-                history, dropped = trim_history(history, ctx_used, NUM_CTX)
+                state["history"], dropped = trim_history(
+                    state["history"], state["ctx_used"], NUM_CTX
+                )
                 if dropped:
                     status.update(
                         status_line(
                             "Summarizing dropped turns...",
-                            ctx_used,
+                            state["ctx_used"],
                             time.time() - start,
                         )
                     )
                     status.start()  # agent may have stopped it while streaming
                     summary = summarize_dropped(dropped)
                     if summary:
-                        history.insert(
+                        state["history"].insert(
                             0,
                             {
                                 "role": "system",
@@ -293,7 +359,7 @@ if __name__ == "__main__":
             console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
             continue
 
-        tag = ctx_tag(ctx_used, NUM_CTX)
+        tag = ctx_tag(state["ctx_used"], NUM_CTX)
         elapsed = time.time() - start
         console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]\n")
         if dropped:

@@ -24,13 +24,13 @@ These are the differences you notice in the first 5 minutes of using Claude Code
 
 Teaches how real harnesses are structured.
 
-| Feature | Why it matters | Effort |
-|---|---|---|
-| Multi-provider abstraction | Claude Code runs on Anthropic; Mia only on Ollama. Abstracting teaches protocol design | Medium |
-| Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small |
-| Slash commands (`/clear`, `/ctx`, `/help`) | The control-plane vs. data-plane split — commands the harness handles vs. text the model sees | Small |
-| Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium |
-| Hooks | Pre/post tool-call hooks the user can configure. Teaches extensibility | Small |
+| Feature | Why it matters | Effort | Status |
+|---|---|---|---|
+| Multi-provider abstraction | Claude Code runs on Anthropic; Mia only on Ollama. Abstracting teaches protocol design | Medium | |
+| Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small | |
+| Slash commands (`/clear`, `/context`, `/help`) | The control-plane vs. data-plane split — commands the harness handles vs. text the model sees | Small | Shipped |
+| Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | |
+| Hooks | Pre/post tool-call hooks the user can configure. Teaches extensibility | Small | |
 
 ## Tier 3 — Polish / power features
 
