@@ -54,4 +54,8 @@ __all__ = [
     "summarize_dropped",
     "trim_history",
     "truncate_tool_result",
+    # Private helpers re-exported so tests can reach them via `from agent
+    # import ...`. Not part of the stable surface, hence the _ prefix.
+    "_debug_dump_messages",
+    "_run_tools_parallel",
 ]

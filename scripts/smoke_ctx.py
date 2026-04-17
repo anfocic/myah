@@ -12,6 +12,7 @@ Run: `python -m scripts.smoke_ctx`
 from __future__ import annotations
 
 import config
+
 config.NUM_CTX = 1024  # shrink *before* importing agent so module-level uses see it
 
 from agent import run_agent, summarize_dropped, trim_history  # noqa: E402
@@ -34,7 +35,6 @@ def main() -> None:
     trim_events = 0
     summary_seen = False
     peak_ctx = 0
-    post_trim_ctx = None
 
     for i, user_input in enumerate(inputs, start=1):
         _, history, ctx_used = run_agent(user_input, [], noop_tool, history)
@@ -49,7 +49,6 @@ def main() -> None:
                     0,
                     {"role": "system", "content": f"Summary of earlier conversation: {summary}"},
                 )
-            post_trim_ctx = ctx_used  # ctx_used is pre-trim; next turn reveals post-trim
         print(
             f"turn {i}: ctx_used={ctx_used:>4}  history_len={len(history):>2}  "
             f"dropped={len(dropped) // 2}"
