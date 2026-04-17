@@ -7,10 +7,11 @@ import time
 from rich.console import Console
 
 from agent import status_line, run_agent, summarize_dropped, trim_history
-from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
+from config import NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
+from tools.harness import harness_info, harness_snapshot
 from tools.search import glob, grep
 from tools.utils import get_current_time
 
@@ -187,49 +188,68 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "harness_info",
+            "description": "Introspect the harness you are running in: current model, context window size (num_ctx), context used in the previous turn, number of conversation turns in history, working directory, git branch, today's date, and the list of tools available to you. Call this when the user asks about the harness, model, or context usage, or when you need to decide whether to summarize / shorten your reply because ctx is getting tight.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
+TOOL_NAMES = [t["function"]["name"] for t in tools]
 
-def execute_tool(name, args):
-    # Args come from the model, which occasionally omits required keys.
-    # Return the error as a tool result so the model can recover instead of
-    # crashing the REPL.
-    try:
-        if name == "get_current_time":
-            return get_current_time()
-        elif name == "read_file":
-            return read_file(
-                args["path"],
-                int(args.get("offset", 1)),
-                int(args["limit"]) if "limit" in args else None,
-            )
-        elif name == "write_file":
-            return write_file(args["path"], args["content"])
-        elif name == "edit_file":
-            return edit_file(
-                args["path"],
-                args["old_string"],
-                args["new_string"],
-                bool(args.get("replace_all", False)),
-            )
-        elif name == "glob":
-            return glob(args["pattern"], args.get("path", "."))
-        elif name == "grep":
-            return grep(
-                args["pattern"],
-                args.get("path", "."),
-                args.get("glob"),
-                args.get("output_mode", "files_with_matches"),
-            )
-        elif name == "bash":
-            return run_bash(
-                args["command"],
-                args.get("cwd", "."),
-                int(args.get("timeout", 30)),
-            )
-        return "Tool not found"
-    except KeyError as e:
-        return f"Missing required argument: {e}"
+
+def make_execute_tool(state: dict):
+    """Factory so the harness_info tool can close over the live REPL state
+    (ctx_used, history). Passing state through run_agent would leak REPL
+    internals into its signature; a closure keeps agent.py state-ignorant."""
+
+    def execute_tool(name, args):
+        # Args come from the model, which occasionally omits required keys.
+        # Return the error as a tool result so the model can recover instead of
+        # crashing the REPL.
+        try:
+            if name == "get_current_time":
+                return get_current_time()
+            elif name == "read_file":
+                return read_file(
+                    args["path"],
+                    int(args.get("offset", 1)),
+                    int(args["limit"]) if "limit" in args else None,
+                )
+            elif name == "write_file":
+                return write_file(args["path"], args["content"])
+            elif name == "edit_file":
+                return edit_file(
+                    args["path"],
+                    args["old_string"],
+                    args["new_string"],
+                    bool(args.get("replace_all", False)),
+                )
+            elif name == "glob":
+                return glob(args["pattern"], args.get("path", "."))
+            elif name == "grep":
+                return grep(
+                    args["pattern"],
+                    args.get("path", "."),
+                    args.get("glob"),
+                    args.get("output_mode", "files_with_matches"),
+                )
+            elif name == "bash":
+                return run_bash(
+                    args["command"],
+                    args.get("cwd", "."),
+                    int(args.get("timeout", 30)),
+                )
+            elif name == "harness_info":
+                return harness_info(state, TOOL_NAMES)
+            return "Tool not found"
+        except KeyError as e:
+            return f"Missing required argument: {e}"
+
+    return execute_tool
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
@@ -264,15 +284,14 @@ def cmd_clear(state):
 
 
 def cmd_context(state):
-    ctx = state["ctx_used"]
-    turns = len(state["history"]) // 2
-    tag = ctx_tag(ctx, NUM_CTX)
+    s = harness_snapshot(state, TOOL_NAMES)
+    tag = ctx_tag(s["ctx_used"], s["num_ctx"])
     console.print(
-        f"[bold]model:[/bold] {MODEL_NAME} [dim]({MODEL_PROVIDER})[/dim]\n"
-        f"[bold]num_ctx:[/bold] {NUM_CTX}\n"
-        f"[bold]ctx used:[/bold] {ctx} {tag}\n"
-        f"[bold]history turns:[/bold] {turns}\n"
-        f"[bold]tools:[/bold] {', '.join(t['function']['name'] for t in tools)}"
+        f"[bold]model:[/bold] {s['model']} [dim]({s['provider']})[/dim]\n"
+        f"[bold]num_ctx:[/bold] {s['num_ctx']}\n"
+        f"[bold]ctx used:[/bold] {s['ctx_used']} {tag}\n"
+        f"[bold]history turns:[/bold] {s['history_turns']}\n"
+        f"[bold]tools:[/bold] {', '.join(s['tools'])}"
     )
 
 
@@ -308,6 +327,7 @@ if __name__ == "__main__":
     # latest values. trim_history rebinds the list, so we can't keep a
     # separate local `history` without drift.
     state: dict = {"history": [], "ctx_used": 0}
+    execute_tool = make_execute_tool(state)
     while True:
         try:
             user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
