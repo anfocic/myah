@@ -433,6 +433,36 @@ Allow-list over deny-list because new tools default to blocked. A future `delete
 
 See: `agent.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
 
+## 30. Multi-provider abstraction — two protocol families, one contract
+
+`agent.py` used to call `ollama.chat(...)` directly. That's fine until you want to run the harness against anything else — at which point the 20% of code that cares about the shape of `chunk.message.content` blocks 100% of provider swaps.
+
+The fix is a `providers/` package with three files and one protocol:
+
+```
+providers/
+  base.py             Provider Protocol + StreamChunk / ToolCall / Usage + ProviderError
+  ollama_adapter.py   wraps ollama.chat, translates chunks → StreamChunk
+  openai_compat.py    httpx SSE client against any /v1/chat/completions
+  __init__.py         get_provider() factory reads MODEL_PROVIDER from config
+```
+
+Everything above `providers/` is provider-agnostic. One `MIA_PROVIDER=openai-compat python main.py` swaps backends. Config carries the per-provider knobs (`OLLAMA_MODEL` / `OLLAMA_BASE_URL`, `OPENAI_COMPAT_MODEL` / `OPENAI_COMPAT_BASE_URL`; API key via env).
+
+**Why OpenAI-compatible HTTP instead of the Anthropic / OpenAI SDKs?** Because anyone who wants Claude or GPT-4 runs Claude Code or Codex directly — rebuilding those call paths here has no practical payoff. But *OpenAI-compatible HTTP* is the de facto standard for everything else: Groq, LM Studio, llama.cpp server, vLLM, Together, Fireworks, OpenRouter, DeepInfra. One adapter unlocks dozens of backends, including fully-local ones. That's the real lesson of provider abstraction — not "wrap three vendors" but "speak the one shape that every non-vendor speaks."
+
+The two adapters diverge on three axes, and those divergences are exactly what the abstraction has to hide:
+
+1. **Streaming shape.** Ollama's Python SDK yields dotted-path response objects (`chunk.message.content`, `chunk.message.tool_calls`) with tool calls arriving complete in one chunk. OpenAI-compat streams raw SSE (`data: {...}\n\n`, `data: [DONE]`) with *tool calls arriving as deltas* — `name` in one event, `arguments` as partial JSON chunks across many events. The adapter buffers by `tool_calls[*].index` and only emits a `ToolCall` when `finish_reason == "tool_calls"` lands. From the agent's perspective, both adapters yield the same `StreamChunk` with *complete* `ToolCall`s. That normalization is the whole contract.
+
+2. **Message format.** OpenAI requires `tool_calls` to live on the assistant message and every subsequent `tool` message to carry `tool_call_id`. Ollama is looser — tool calls come back via the stream, and replayed assistant messages don't need to re-declare them. A surgical change to `agent.py` (store tool calls on the assistant message in internal format) plus a `_translate_messages` walk in the OpenAI adapter (synthesize `call_0`, `call_1`, … IDs matched by position) handles it. Ollama adapter has to *strip* our internal `tool_calls` field before sending because its pydantic validator rejects the `{"name", "arguments"}` shape it doesn't recognize. The internal format sits between the two, and each adapter translates on the way out.
+
+3. **Error handling.** `ollama.chat` raises `ConnectionError` / `httpx.*` / pydantic validation errors. HTTP-SSE returns 401/403 as status codes, 5xx as opaque bodies, and can break mid-stream. Both collapse into one `ProviderError` with a message, so `agent.py` has one catch clause and surfaces errors the same way as Ctrl+C does — print, preserve history, return to REPL.
+
+The pedagogy is worth naming: **an abstraction isn't proven by wrapping one thing; it's proven by the seams exposed when you wrap the second**. Building just the Ollama adapter looks clean because there's nothing to translate. The OpenAI adapter is where you find out whether the protocol you designed actually holds — and the two messy parts (delta accumulation, tool_call_id synthesis) are not incidental complexity, they're the protocol tax every real multi-provider harness pays.
+
+See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent.py:_provider`
+
 ---
 
 ## To cover next
