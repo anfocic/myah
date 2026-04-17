@@ -186,6 +186,17 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
     for msg in messages:
         role = msg.get("role")
         if role == "assistant" and msg.get("tool_calls"):
+            # Orphan guard: if the previous assistant emitted tool_calls that
+            # never got matching tool messages (truncated session, mid-turn
+            # compaction, etc.), OpenAI rejects the payload. Stub placeholders
+            # for each leftover so the contract "every tool_call has a tool
+            # result" holds before we append the new assistant block.
+            for orphan_id in pending_ids:
+                out.append({
+                    "role": "tool",
+                    "tool_call_id": orphan_id,
+                    "content": "[no tool result — turn truncated]",
+                })
             ids_for_this = []
             oai_tool_calls = []
             for tc in msg["tool_calls"]:
@@ -207,9 +218,11 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
             })
             pending_ids = ids_for_this
         elif role == "tool":
-            tid = pending_ids.pop(0) if pending_ids else f"call_{counter}"
-            if not pending_ids and tid.startswith("call_"):
-                counter += 1  # only bump if we minted a fresh one
+            if pending_ids:
+                tid = pending_ids.pop(0)
+            else:
+                tid = f"call_{counter}"
+                counter += 1
             out.append({
                 "role": "tool",
                 "tool_call_id": tid,

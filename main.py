@@ -58,10 +58,25 @@ def _load_session(state: dict) -> None:
     try:
         with open(SESSION_FILE) as f:
             loaded = json.load(f)
-        if isinstance(loaded, list):
-            state["history"] = loaded
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+        return
+    if not isinstance(loaded, list):
+        return
+    # Validate each entry: without this filter a hand-edited or corrupted
+    # session file slides through isinstance(list) and crashes later when
+    # run_agent iterates and calls .get("role") on a non-dict.
+    valid = [
+        e for e in loaded
+        if isinstance(e, dict)
+        and isinstance(e.get("role"), str)
+        and isinstance(e.get("content"), str)
+    ]
+    if len(valid) != len(loaded):
+        console.print(
+            f"[dim yellow]↳ session file had {len(loaded) - len(valid)} "
+            "malformed entr(ies); dropped them[/dim yellow]"
+        )
+    state["history"] = valid
 
 
 def _save_session(state: dict) -> None:
