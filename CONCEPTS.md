@@ -311,14 +311,87 @@ The caveat written into the output string: `ctx_used` is the **previous turn's s
 
 See: `tools/harness.py`, `main.py:make_execute_tool`
 
+## 24. Rendered markdown output — streaming a Live canvas
+
+The streaming loop used to `console.print(chunk, end="")` each token as raw text. Works, but the model's markdown (lists, code fences, tables) arrives as literal asterisks and backticks instead of formatted output.
+
+The swap: `rich.live.Live(Markdown(content))`. On first content, open a Live region; each chunk appends to `content_parts` and calls `live.update(Markdown("".join(content_parts)))`; on end (or interrupt), `live.stop()` freezes the final render in place. Uses `try/finally` so `stop()` fires on KeyboardInterrupt too — otherwise the terminal is left in Live's cursor-hiding state.
+
+The trade-off written into the design: **markdown is a block-level format, streaming is token-level**. A partial code fence looks like plain text until the closing ``` arrives; a partial table shows one row at a time as a header. Rich re-parses the whole content on each update (~12 Hz here), which is wasteful but invisible at this scale. The correct fix — incremental markdown parsing — is a rabbit hole the project doesn't need.
+
+Why not render ONLY at the end? Because token-by-token arrival is the thing that makes an LLM feel alive. Users tolerate a little visual jitter in exchange for knowing the model is still thinking. Claude Code does the same thing.
+
+See: `agent.py:run_agent` (Live/Markdown block)
+
+## 25. Parallel tool execution — serial gate, parallel body
+
+Earlier turns executed tool calls sequentially: a model emitting `[grep, read_file]` paid for `grep` *then* `read_file`, even though neither depends on the other. Now: permission checks stay serial (user prompts can't happen in parallel — the TUI would interleave), then approved calls fire through a `ThreadPoolExecutor` and their results are re-sorted into the original order before being appended to `messages`.
+
+The shape is:
+
+```
+tool_calls → [permission gate, serial] → approved/denied
+                                            ↓
+                                       [ThreadPoolExecutor, parallel]
+                                            ↓
+                                       results[], aligned to tool_calls
+                                            ↓
+                                       messages.append(…) in order
+```
+
+Three design choices worth naming:
+
+1. **Ordering.** The model's tool_calls list is its intent; the messages it sees back must appear in the same order. Futures complete in whatever order the OS schedules, so we index by position (`results = [None] * n; results[i] = fut.result()`) rather than using an order-dependent collection.
+
+2. **Exceptions become data.** A tool that raises isn't allowed to crash the loop — `fut.result()` is wrapped in `try/except Exception` and the error is returned as a tool-result string the model can recover from. Same philosophy as the `KeyError` guard in `execute_tool`: errors are data, not control-flow.
+
+3. **Threads, not asyncio.** All tools are synchronous (file I/O, subprocess); a `ThreadPoolExecutor` is the minimum change. Asyncio would require every tool to be `async def` and every `subprocess.run` to move to `asyncio.create_subprocess_exec`. Not worth it for a learning harness — threads are "the same but they can wait at the same time."
+
+Speedup is real: three 300ms sleeps serial = 0.9s, parallel = 0.3s (verified).
+
+See: `agent.py:_run_tools_parallel`
+
+## 26. Session persistence + project context (CLAUDE.md)
+
+Two small persistence features in the same section because they're two sides of the same coin: state the harness should remember across restarts.
+
+**Session history** (`~/.mia_session.json`): every conversation turn that completes cleanly gets written back via `atexit`. On startup, `main.py` loads it into `state["history"]` and prints `↳ resumed session: N turn(s) restored`. `/clear` also wipes the file — otherwise "clear history" would be a lie that reappeared on next launch. Writes are atomic via `tmp + os.replace` so a crash mid-write doesn't leave a truncated JSON file that the next startup can't parse.
+
+**`CLAUDE.md` injection**: if the cwd contains a `CLAUDE.md`, `agent.py:_build_system_prompt` appends its contents to the system prompt every turn. Re-read each turn so edits take effect without restarting the REPL — a single `Path.read_text()` against a ~5KB file is free compared to an LLM call.
+
+The subtle design question: *when* to read CLAUDE.md. Options:
+
+- **Once, at startup** — fastest, but edits don't take effect without restart.
+- **Every turn** — chosen. Simple, edits are live, cost is trivial.
+- **Cache with mtime check** — premature.
+
+And the subtle correctness question: should the saved session include *tool* messages too? No — we only save `history`, which (by `run_agent`'s discipline, see §21) contains only completed user/assistant turns. Tool round-trips are intermediate work, not conversation, and restoring half a tool chain into a new session would confuse the model.
+
+See: `main.py:_load_session`, `main.py:_save_session`, `agent.py:_build_system_prompt`
+
+## 27. Plan mode — cheap safety via prompt + tool gate
+
+`/plan` toggles a state flag. When on, two things happen:
+
+1. `_build_system_prompt` appends a "PLAN MODE is ON — describe what you WOULD do, wait for confirmation" block.
+2. `_run_tools_parallel` short-circuits every tool call with `"Plan mode is on — tool call not executed"` *before* the permission prompt fires.
+
+The prompt handles the common case (model sees the instruction, describes instead of acting). The tool gate handles the uncommon case — model ignores the instruction and tries to call anyway. Belt + suspenders. In practice, qwen2.5:7b respects the instruction about 80% of the time; the gate catches the rest without the user having to click deny on five prompts.
+
+Claude Code does this with a dedicated `ExitPlanMode` tool that's the *only* callable tool in plan mode — model can't do work, only propose it, and the proposal terminates via that tool. That's tighter than a bool flag because it forces a specific exit protocol. Mia's version is cruder but teaches the same idea: **constraining what the model can do is a feature, not a limitation**. The smallest expressive unit of "safety mode" is `bool plan_mode + short-circuit in the executor`.
+
+Surfaced in `/context` and the `harness_info` tool so the model can detect its own mode when asked ("am I in plan mode?").
+
+See: `agent.py:_build_system_prompt` (plan block), `agent.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
+
 ---
 
 ## To cover next
 
 - [ ] System prompt as configuration, not hardcode
 - [ ] Multi-provider abstraction (OpenAI / Anthropic / Ollama)
-- [ ] Tool-call error handling (model calls a tool that raises)
-- [ ] Parallel tool calls (model returns 2+ calls in one turn)
-- [ ] Persisting history across sessions
+- [x] Tool-call error handling (model calls a tool that raises — `_run_tools_parallel` catches and returns as data)
+- [x] Parallel tool calls (model returns 2+ calls in one turn — §25)
+- [x] Persisting history across sessions (§26)
 - [ ] Cost/latency tracking per turn
 - [x] Tool result truncation (per-tool caps + harness-level `truncate_tool_result`)
