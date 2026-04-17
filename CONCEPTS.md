@@ -208,6 +208,31 @@ Two broader lessons:
 
 See: `tools/files.py:read_file`
 
+## 18. Confident-plausible regressions (§13, second flavor)
+
+Asked qwen2.5:7b to review `tools/search.py`. The review itself was generic ("add docstrings", "improve error handling", "follow PEP 8") — no actual bugs caught. Then it offered a "refined" rewrite. Nine concrete regressions in ~50 lines:
+
+| # | Regression | Consequence |
+|---|---|---|
+| 1 | Dropped `import re` | `NameError` on first call |
+| 2 | `files[:MAX_RESULTS]` caps files, not hits | Misses matches past the 50th file |
+| 3 | Catches only `IOError, OSError` around read | Crashes on first binary file (`UnicodeDecodeError`) |
+| 4 | `f.read(MAX_FILE_BYTES)` instead of size-skip | Silently truncates 5 MB logs at 1 MB |
+| 5 | `return` on file error instead of `continue` | One unreadable file aborts the whole search |
+| 6 | `output_mode` branches collapsed into one | `files_with_matches` mode broken |
+| 7 | Format changed from `path:lineno:text` to `path:line N:text` | Breaks ripgrep-compatible output the model itself parses |
+| 8 | `truncated` set after-the-fact against file-cap | Flag meaningless |
+| 9 | Long generic docstrings | Contradicts project CLAUDE.md ("no docstrings unless non-obvious"), which the model read minutes before |
+
+§13 was about **API hallucination** — `response['usage']['total_tokens']` when the actual field is `prompt_eval_count`. §18 is **semantic regression** — the code compiles, looks cleaner (fewer branches, nicer docstrings), and is strictly worse. The structure passes the eyeball test. Only tracing behavior case-by-case surfaces the breakage.
+
+Two lessons:
+
+1. **"Looks like a refactor" ≠ "is a refactor."** A rewrite that removes branches often removes the branches that were handling the edge cases. Review by *enumerating which inputs behave differently*, not by reading the new code for style.
+2. **Projects need a self-defense principle.** The model had CLAUDE.md in its context — "Don't add comments/docstrings unless the logic is non-obvious" — and violated it within the same turn. Style rules don't bind the model unless the harness refuses to accept violations. Code review by a stronger model, pre-commit checks, or lint configuration are the enforcement; the system prompt alone is not.
+
+See: also §13. Review transcript archived in `logs/agent.jsonl`.
+
 ---
 
 ## To cover next
