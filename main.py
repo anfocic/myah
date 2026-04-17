@@ -1,24 +1,38 @@
 # main.py
 import atexit
+import copy
 import json
 import os
 import readline  # noqa: F401 — import enables arrow-key line editing + history in input()
 import subprocess
 import time
+from collections import deque
 
 from rich.console import Console
 
-from agent import status_line, run_agent, summarize_dropped, trim_history
+from agent import (
+    apply_summary,
+    compact_history,
+    run_agent,
+    status_line,
+    trim_history,
+)
 from display import render_diff, render_file_preview
 from config import NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
+from tools.git import git_checkout
 from tools.harness import harness_info, harness_snapshot
 from tools.search import glob, grep
 from tools.utils import get_current_time
 
 console = Console()
+
+# Cap on the in-memory snapshot stack used by /rewind. Each snapshot is a
+# deep copy of history taken before a run_agent call; 20 is generous enough
+# to cover an interactive session without unbounded growth.
+REWIND_MAX_SNAPSHOTS = 20
 
 HISTORY_FILE = os.path.expanduser("~/.mia_history")
 SESSION_FILE = os.path.expanduser("~/.mia_session.json")
@@ -228,6 +242,23 @@ tools = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_checkout",
+            "description": "Switch to a git branch. Equivalent to `git checkout <branch>`. ALWAYS use this whenever the user asks to switch, check out, or move to a branch — never simulate the action in text and never fabricate output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch name to switch to (e.g. 'main', 'feat/foo').",
+                    },
+                },
+                "required": ["branch"],
+            },
+        },
+    },
 ]
 
 TOOL_NAMES = [t["function"]["name"] for t in tools]
@@ -277,6 +308,8 @@ def make_execute_tool(state: dict):
                 )
             elif name == "harness_info":
                 return harness_info(state, TOOL_NAMES)
+            elif name == "git_checkout":
+                return git_checkout(args["branch"])
             return "Tool not found"
         except KeyError as e:
             return f"Missing required argument: {e}"
@@ -393,7 +426,8 @@ def _build_prompt(state: dict) -> str:
 
 def _print_hint() -> None:
     console.print(
-        "[dim]/help · /plan · /retry · /debug · ctrl+c to interrupt[/dim]"
+        "[dim]/help · /plan · /compact · /rewind · /retry · "
+        "ctrl+c to interrupt[/dim]"
     )
 
 
@@ -433,7 +467,7 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
 # out of the tool layer teaches the control-plane / data-plane split: the
 # model never sees these — they're harness UX.
 
-def cmd_help(state):
+def cmd_help(state, arg=""):
     lines = ["[bold]Commands:[/bold]"]
     for name, (_, desc) in SLASH_COMMANDS.items():
         lines.append(f"  [cyan]{name}[/cyan] — {desc}")
@@ -441,14 +475,15 @@ def cmd_help(state):
     console.print("\n".join(lines))
 
 
-def cmd_clear(state):
+def cmd_clear(state, arg=""):
     state["history"].clear()
+    state["snapshots"].clear()  # else /rewind resurrects wiped history
     state["ctx_used"] = 0
     _wipe_session()
     console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
 
-def cmd_context(state):
+def cmd_context(state, arg=""):
     s = harness_snapshot(state, TOOL_NAMES)
     tag = ctx_tag(s["ctx_used"], s["num_ctx"])
     plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
@@ -462,7 +497,7 @@ def cmd_context(state):
     )
 
 
-def cmd_plan(state):
+def cmd_plan(state, arg=""):
     state["plan_mode"] = not state.get("plan_mode", False)
     status = "[yellow]ON[/yellow]" if state["plan_mode"] else "[dim]off[/dim]"
     console.print(
@@ -471,7 +506,7 @@ def cmd_plan(state):
     )
 
 
-def cmd_debug(state):
+def cmd_debug(state, arg=""):
     state["debug"] = not state.get("debug", False)
     status = "[magenta]ON[/magenta]" if state["debug"] else "[dim]off[/dim]"
     console.print(
@@ -480,7 +515,7 @@ def cmd_debug(state):
     )
 
 
-def cmd_retry(state):
+def cmd_retry(state, arg=""):
     """Pop the last user/assistant pair from history and re-run the user
     input. Useful when the model flubbed and we want a fresh sample without
     retyping. No-op (with a note) if there's no prior turn."""
@@ -494,6 +529,57 @@ def cmd_retry(state):
     console.print(f"[dim]↳ retrying: {last_user[:80]}[/dim]")
 
 
+def cmd_compact(state, arg=""):
+    """Proactive compact. Keeps the last 2 user/assistant pairs, summarizes
+    the rest into a system note at the start of history. Different from the
+    auto-trim hysteresis (§6) that waits for 80% ctx — /compact lets the
+    user reset before an expensive operation instead of reacting to it."""
+    new_history, dropped = compact_history(state["history"])
+    if not dropped:
+        console.print("[dim]↳ nothing to compact (history ≤ 2 turns)[/dim]")
+        return
+    n_turns = len(dropped) // 2
+    console.print(f"[dim]↳ compacting {n_turns} turn(s)...[/dim]")
+    summarized = apply_summary(new_history, dropped)
+    state["history"] = summarized
+    if summarized is new_history:
+        # apply_summary returns its input verbatim when summarization fails
+        console.print(
+            f"[dim]↳ dropped {n_turns} turn(s) "
+            "(summary failed — kept last 2 turns only)[/dim]"
+        )
+    else:
+        console.print(f"[dim]↳ compacted {n_turns} turn(s) into summary[/dim]")
+    state["ctx_used"] = 0  # real count settles after the next provider call
+
+
+def cmd_rewind(state, arg=""):
+    """Rewind N turns by popping the snapshot stack (§34). Snapshots are
+    pushed before each run_agent call, so `/rewind 1` restores the state
+    from just before the previous turn. N defaults to 1."""
+    try:
+        n = int(arg) if arg.strip() else 1
+    except ValueError:
+        console.print(f"[dim]↳ /rewind expects a number, got: {arg!r}[/dim]")
+        return
+    if n < 1:
+        console.print("[dim]↳ /rewind N must be ≥ 1[/dim]")
+        return
+    snapshots = state["snapshots"]
+    if not snapshots:
+        console.print("[dim]↳ nothing to rewind[/dim]")
+        return
+    n = min(n, len(snapshots))
+    state["history"] = snapshots[-n]
+    for _ in range(n):
+        snapshots.pop()
+    state["ctx_used"] = 0
+    turns = len(state["history"]) // 2
+    console.print(
+        f"[dim]↳ rewound {n} turn(s) ({turns} turn(s) remain)[/dim]"
+    )
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
@@ -501,20 +587,26 @@ SLASH_COMMANDS: dict = {
     "/plan": (cmd_plan, "toggle plan mode (describe, don't execute)"),
     "/debug": (cmd_debug, "toggle debug (print messages array each turn)"),
     "/retry": (cmd_retry, "re-run the last turn (pops + resubmits)"),
+    "/compact": (cmd_compact, "summarize older turns, keep the last 2"),
+    "/rewind": (cmd_rewind, "undo N turns (default 1) via in-memory snapshots"),
 }
 
 
 def handle_slash(user_input: str, state: dict) -> bool:
-    """If user_input is a slash command, run it and return True. Else False."""
-    cmd = user_input.strip().split(maxsplit=1)[0]
-    if not cmd.startswith("/"):
+    """If user_input is a slash command, run it and return True. Else False.
+    Every handler accepts `(state, arg="")`; commands that don't take an arg
+    simply ignore it."""
+    parts = user_input.strip().split(maxsplit=1)
+    if not parts or not parts[0].startswith("/"):
         return False
+    cmd = parts[0]
+    arg = parts[1] if len(parts) > 1 else ""
     entry = SLASH_COMMANDS.get(cmd)
     if entry is None:
         console.print(f"[dim]↳ unknown command: {cmd} (try /help)[/dim]")
         return True
     handler, _ = entry
-    handler(state)
+    handler(state, arg)
     return True
 
 
@@ -534,6 +626,11 @@ if __name__ == "__main__":
         "ctx_used": 0,
         "plan_mode": False,
         "debug": False,
+        # In-memory only (not persisted): bounded stack of pre-turn history
+        # copies used by /rewind. See §34 — persisting would bloat the session
+        # file and let rewind survive across restarts, which conflicts with
+        # the session-resume model ("what's on disk" = "what I saw last").
+        "snapshots": deque(maxlen=REWIND_MAX_SNAPSHOTS),
     }
     _load_session(state)
     atexit.register(_save_session, state)
@@ -563,6 +660,11 @@ if __name__ == "__main__":
                 console.print()
                 continue
         start = time.time()
+        # Snapshot pre-turn history so /rewind can restore it. Deep copy
+        # because history entries are dicts; a shallow copy could alias and
+        # mutate the snapshot when the next turn rebinds. The deque drops
+        # the oldest entry automatically when it hits maxlen.
+        state["snapshots"].append(copy.deepcopy(state["history"]))
         try:
             with console.status(
                 "[yellow]Thinking...[/yellow]", spinner="dots"
@@ -591,15 +693,7 @@ if __name__ == "__main__":
                         )
                     )
                     status.start()  # agent may have stopped it while streaming
-                    summary = summarize_dropped(dropped)
-                    if summary:
-                        state["history"].insert(
-                            0,
-                            {
-                                "role": "system",
-                                "content": f"Summary of earlier conversation: {summary}",
-                            },
-                        )
+                    state["history"] = apply_summary(state["history"], dropped)
         except KeyboardInterrupt:
             console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
             continue
