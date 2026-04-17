@@ -86,3 +86,47 @@ def grep(
     if truncated:
         out += f"\n... (truncated at {MAX_RESULTS} results)"
     return out
+
+
+def glob(pattern: str, path: str = "."):
+    """Find files matching a glob pattern, recursively.
+
+    Accepts bare filenames ('search.py'), simple globs ('*.py'), or recursive
+    globs ('**/*.md'). Sorted output for determinism. Skips the same dirs grep
+    skips (.git, venv, logs, etc.) so the model doesn't get drowned in noise.
+
+    Primary use: the model sees a bare filename in the user's message and
+    needs to resolve it to a full path before calling read_file or edit_file.
+    """
+    root = Path(os.path.expanduser(path)).resolve()
+    if not root.exists():
+        return f"Path not found: {path}"
+    if root.is_file():
+        return str(root.name)
+
+    matches: list[str] = []
+    truncated = False
+    # Bare filenames with no glob char should match anywhere under root —
+    # prepend '**/' so 'search.py' behaves like the user expects.
+    effective = pattern
+    if not any(c in pattern for c in "*?[") and "/" not in pattern:
+        effective = f"**/{pattern}"
+
+    for p in sorted(root.rglob(effective)):
+        if not p.is_file():
+            continue
+        rel_parts = p.relative_to(root).parts
+        if any(_should_skip_dir(part) for part in rel_parts[:-1]):
+            continue
+        matches.append("/".join(rel_parts))
+        if len(matches) >= MAX_RESULTS:
+            truncated = True
+            break
+
+    if not matches:
+        return f"No files matching {pattern!r}"
+
+    out = "\n".join(matches)
+    if truncated:
+        out += f"\n... (truncated at {MAX_RESULTS} results)"
+    return out
