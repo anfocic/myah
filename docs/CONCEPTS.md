@@ -52,6 +52,20 @@ Running notes on every concept introduced while building this harness. Read top-
 **Architecture**
 30. [Multi-provider abstraction](#30-multi-provider-abstraction--two-protocol-families-one-contract)
 
+**Display layer**
+31. [Display layer — callbacks, not prints](#31-display-layer--callbacks-not-prints)
+
+**Meta**
+32. [Raschka's 6 components as a harness audit](#32-raschkas-6-components-as-a-harness-audit)
+
+**Context preservation — user controls**
+33. [Manual compact — proactive context control](#33-manual-compact--proactive-context-control)
+34. [Rewind — snapshot-based undo](#34-rewind--snapshot-based-undo)
+35. [Microcompact — eliding stale tool results mid-turn](#35-microcompact--eliding-stale-tool-results-mid-turn)
+
+**Tool design**
+36. [Narrow named tools > generic shell](#36-narrow-named-tools--generic-shell-for-small-models)
+
 ---
 
 ## 1. The agentic loop
@@ -512,6 +526,145 @@ The two adapters diverge on three axes, and those divergences are exactly what t
 The pedagogy is worth naming: **an abstraction isn't proven by wrapping one thing; it's proven by the seams exposed when you wrap the second**. Building just the Ollama adapter looks clean because there's nothing to translate. The OpenAI adapter is where you find out whether the protocol you designed actually holds — and the two messy parts (delta accumulation, tool_call_id synthesis) are not incidental complexity, they're the protocol tax every real multi-provider harness pays.
 
 See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent.py:_provider`
+
+## 31. Display layer — callbacks, not prints
+
+A version of `run_agent` that `console.print`s tool events directly couples the loop to `rich`, to the REPL's console instance, and to today's output format. Swap `rich` for `prompt_toolkit` later and every line has to move. Add structured logging and the console prints become double-output. The fix is the same pattern `permission_check` already uses: **optional callback kwargs the caller supplies, no-op defaults**.
+
+- `on_tool_start(name, args)` fires in request order — for each tool_call, whether or not it will actually run.
+- `on_tool_end(name, args, result, ok)` fires when the tool finishes, whether via completion, denial, plan-block, or exception. `ok=False` covers all three failure shapes, leaving the callback to discriminate on the result string prefix (`User denied`, `Plan mode:`, `Tool raised:`).
+
+`agent.py` calls them and never touches a console. Everything visual lives in `main.py` / `display.py`.
+
+Four design choices worth naming:
+
+1. **Display is always peripheral.** Every callback invocation is wrapped in `try/except Exception: pass`. A bug in a `rich` renderer must not kill a tool call mid-flight — the model's turn is load-bearing; the UI is not. Same invariant as "tool errors are data, not exceptions" (§25), one layer higher: display errors are also data, also swallowed.
+
+2. **Display-only vs model-facing.** The diff panel rendered for `edit_file` and the syntax-highlighted preview for `read_file` are for the human only. The model still receives the raw result string — including the cat -n line numbers it relies on for line references (§17). Two consumers of every tool result, two shapes: the callback gets `(name, args, result, ok)` and decides how to present; the loop gets the unchanged `result` and appends it to `messages`. The categorical mistake to avoid is "clean up the tool result for display *and also* feed the cleaned version to the model" — it tends to break the model's tool contract.
+
+3. **Args correlation across parallel futures.** Per-tool rendering (diff needs `old_string` / `new_string`) means `on_tool_end` needs the args the tool was called with. In the parallel-execution path (§25), futures complete in scheduler order, not call order — so the args have to ride along with the future: `future_to_idx[fut] = (i, name, args)` rather than `i` alone. Tiny shape change; generalizes — any parallel worker whose completion handler needs input data has to thread it through the future map, not re-look-it-up.
+
+4. **Stats as structured return, not side-prints.** TTFT and tokens-per-second were tempting to `console.print` from inside the stream loop (that's where the data is). Wrong layer. `run_agent` now returns a fourth value — `stats = {ttft_ms, completion_tokens, tok_per_s}` — and `main.py` formats them onto the post-turn dim line. The loop stays UI-agnostic; the metric stays testable.
+
+A related streaming note: **TTFT and generation time are distinct.** `tok_per_s = completion_tokens / (elapsed − ttft_ms/1000)`. Dividing by total elapsed under-reports rate on long prompts, because prompt-eval time (everything before the first token) leaks into the denominator. Separating the two matches what the user actually perceives: "how long until I see text" vs. "how fast is it coming out now."
+
+See: `agent.py:_run_tools_parallel` (callbacks + args threading), `display.py` (renderers), `main.py:on_tool_start` / `on_tool_end` / `_build_prompt`
+
+## 32. Raschka's 6 components as a harness audit
+
+Sebastian Raschka's *Components of a Coding Agent* names six building blocks: **live repo context**, **prompt shape & cache reuse**, **structured tool access**, **context reduction & output management**, **structured session memory**, **bounded subagents**. That list doubles as an audit checklist for a harness in progress — map what you have to the six, and the gaps tell you where to invest next.
+
+Mia as of §31:
+
+| Component | Have | Gap |
+|---|---|---|
+| Live repo context | env block (cwd / git / CLAUDE.md re-read each turn) | no upfront workspace summary (file tree, entry points, recent commits) |
+| Prompt shape + cache reuse | — | env + CLAUDE.md reinjected every turn breaks any prefix reuse; no stable/volatile split |
+| Structured tool access | schema registry, permission gate, plan-mode read-only filter | — |
+| Context reduction | `truncate_tool_result`, `trim_history`, `summarize_dropped` | no per-tool clip rules, no progressive summarization (older = tighter) |
+| Structured session memory | raw transcript persistence + JSONL log | no distilled working memory (task state, open findings) alongside the transcript |
+| Bounded subagents | — | no delegation primitive; no scoped sub-loops with tool subsets |
+
+Two uses for this framing:
+
+1. **Prevents whiplash prioritization.** Without a checklist, "what to build next" defaults to whichever rabbit hole was most salient last session. With one, the ordering is legible — biggest missing component, not loudest recent frustration.
+2. **Reveals that local-model constraints change the shape, not the list.** Subagents on a local 7b don't buy parallelism (single GPU — they serialize). They *do* buy **tool subsetting** (fewer tools → better tool routing) and **context hygiene** (big-result summarization in a sub-loop, 200-token return to the parent). The component is still worth building; the value prop is different.
+
+Worth re-running every few PRs. If a box that used to say "have" has decayed into "partial," that's signal — usually from adding features that didn't update the enforcement layer.
+
+See: https://magazine.sebastianraschka.com/p/components-of-a-coding-agent
+
+## 33. Manual compact — proactive context control
+
+§6 and §7 together give a *reactive* compactor: when `ctx_used > 80% * NUM_CTX`, trim oldest turns and summarize them back in. That works, but it's always one step behind — by the time the trim fires, the user has already paid for a bloated prompt.
+
+`/compact` fills the other half: **user-initiated** compaction, regardless of pressure. Before a big operation ("read five files and refactor"), the user can reset the transcript first, so the interesting work starts from a small prompt instead of inheriting the previous session's ceremony.
+
+Shape (`agent.py:compact_history` + `main.py:cmd_compact`):
+
+1. Keep the last 2 user/assistant pairs — those carry the current intent.
+2. Summarize everything before that through the same `summarize_dropped` path used by auto-trim.
+3. Insert the summary as a synthetic `role:"system"` note at position 0. Same place auto-trim puts it, so history has one canonical shape.
+
+Three design choices worth naming:
+
+1. **Keep-last, not keep-until-target.** Auto-trim uses a token budget (drop pairs until `estimate_tokens < 50% * NUM_CTX`) because it fires at a known ctx ceiling. Manual compact fires whenever the user asks, possibly with a near-empty history. A token-target would produce wildly different amounts of compaction depending on history size; `keep_last=2` produces a stable, predictable result — "one user message of runway, plus the prior turn for continuity."
+
+2. **Summary failure is recoverable.** If the summarizer call raises or returns empty, `cmd_compact` still drops the old turns but skips the summary insert. The user loses the gist of pre-compact conversation, but the transcript state stays consistent — one of "summary + last 2" or "last 2 only." Printing which outcome occurred is important so the user knows what's in their context.
+
+3. **Distinct command, same machinery.** `/compact` calls `compact_history` (new) and `summarize_dropped` (existing). The auto-trim path calls `trim_history` (existing) and the same `summarize_dropped`. Two entry points, one summarizer — if the summary prompt changes, both paths benefit.
+
+Claude Code's `/compact` does something richer: it can take a target instruction ("focus on the auth refactor") that biases the summary. Mia's version is parameterless. Easy upgrade later: pass the user's arg string into `summarize_dropped` as an extra system turn.
+
+See: `agent.py:compact_history`, `main.py:cmd_compact`
+
+## 34. Rewind — snapshot-based undo
+
+`/retry` (§22's slash layer) already pops the last user/assistant pair and resubmits the prompt. Useful when the model flubbed, but narrow: it only handles "last turn, try again" and it always re-runs. `/rewind` is the more general move — **go back N turns without resubmitting**, because the user wants a different direction, not a fresh sample of the same direction.
+
+The implementation is one of those "just store the state" features that teach more about invariants than about algorithms.
+
+**The mechanism.** Before every `run_agent` call, `main.py` does `snapshots.append(copy.deepcopy(state["history"]))`. `/rewind N` pops N snapshots and restores the Nth one. The stack is capped at `REWIND_MAX_SNAPSHOTS = 20` (drop-oldest when full).
+
+Three design choices:
+
+1. **Deepcopy, not shallow.** History entries are dicts. A shallow copy would share dict references between the snapshot and the live history, so the next turn's mutations could bleed into the snapshot. The copy is cheap — history is small at any plausible size, and we only snapshot once per turn.
+
+2. **In-memory only.** Snapshots live in `state["snapshots"]`; they're never written to `~/.mia_session.json`. Two reasons: (a) session-file bloat — a 20-deep stack of full history copies would multiply file size; (b) semantics — the session file represents "where the conversation ended," not "the whole undo tree." Persisting snapshots would also raise awkward questions about restart: does rewind work after reboot? Keeping them in-memory dodges the question entirely.
+
+3. **Snapshot before the turn, not after.** If you snapshot *after* a successful turn, `/rewind 1` restores the state *including* the most recent turn — which is a no-op. Snapshotting *before* means the top of the stack is the state you'd restore to to undo the last turn. That's the intuitive semantics.
+
+The subtle correctness point: **`/clear` must also wipe `snapshots`**. Otherwise `/clear` → `/rewind` resurrects exactly the history the user just asked to nuke, and now the "everything wiped" affordance is a lie. Any feature that resets history needs to include the snapshot stack in the reset.
+
+Why this is different from a generic undo: we're not trying to rewind *all* state (file contents on disk, tool effects) — only conversation state. A rewound harness doesn't un-edit files it edited; the user has git for that. The feature is specifically "conversation-level undo," which maps cleanly to a snapshot of `history` because that's the only mutable conversation surface.
+
+See: `main.py:cmd_rewind`, `main.py` REPL loop (snapshot push), `main.py:cmd_clear`
+
+## 35. Microcompact — eliding stale tool results mid-turn
+
+§6/§7 and §33 all operate on `history` — the user/assistant transcript that lives between turns. None of them can touch tool results, because per §3 tool messages are **deliberately not kept in history**. They live only inside the `messages` list that `run_agent` builds fresh each turn.
+
+That's a problem the moment a single turn does ten tool calls. Imagine the model reading five files to answer a question: by iteration 6 of the `while True` loop, `messages` contains five chunky `role:"tool"` entries, each up to `TOOL_RESULT_MAX_BYTES = 10_000` characters. That's 50KB of tool output the next provider call has to re-send — *per iteration*, because the full `messages` array goes over the wire every turn. A well-meaning 7b model can pile up enough tool history in one turn to stall itself mid-reasoning.
+
+`microcompact` is the intra-turn counterpart to `trim_history`. It walks `messages`, finds all `role:"tool"` entries, keeps the last `keep_recent = 3` intact, and rewrites the older ones' content to `[tool result elided — N chars]`. The assistant's `tool_calls` structure stays in place, so the transcript still parses as a coherent tool-use chain — only the bulky result payloads shrink.
+
+Three design choices:
+
+1. **Elide, don't summarize.** Summarizing each old tool result would cost an extra LLM call per microcompact event, and tool output is usually structured (file contents, grep hits) where a natural-language summary loses the one thing the model might still need — the exact text. The stub "[tool result elided — 8234 chars]" tells the model "you looked at this, it was ~8KB, I don't have it anymore." That's enough for it to decide whether to re-read or move on.
+
+2. **Threshold-gated inside the loop.** Microcompact runs at the top of each `while True` iteration, but only when `ctx_used > 60% * NUM_CTX`. Below that, the cost of rewriting dicts isn't worth it. The threshold (0.6) is lower than auto-trim's (0.8) because microcompact runs *during* a turn, before that turn's final assistant message has been generated — we want to free space *before* the provider call that needs it, not after.
+
+3. **Idempotent by construction.** A stub starting with `[tool result elided` is left alone by subsequent passes. That lets us call microcompact cheaply on every loop iteration without worrying about double-eliding or reshaping already-compact messages.
+
+The pedagogy is the part worth keeping: **context management isn't a single mechanism; it's a layered one.** Per-tool caps handle "one bad tool call." `truncate_tool_result` handles "the tool author forgot a cap." `trim_history` handles "the conversation got long." `microcompact` handles "the *single turn* got long." Each layer catches a different failure, and you notice you need the next layer only when the previous one starts to leak.
+
+See: `agent.py:microcompact`, `agent.py:run_agent` (top-of-loop call), `config.py` constants nearby
+
+## 36. Narrow named tools > generic shell (for small models)
+
+qwen2.5:7b kept narrating branch switches as if they'd happened — "Switching to main now. HEAD is now at abc1234..." — with no tool call and entirely fabricated output. Strengthening the system prompt ("NEVER hallucinate actions", "CRITICAL: only tools change state", examples of correct/wrong behavior) had no effect. One prompt shape made it *worse*: the few-shot example `You: [call bash(command="git checkout main")]` taught the model to emit that bracketed string as plain text.
+
+The fix was a new tool, `git_checkout(branch)`, wrapping `subprocess.run(["git", "checkout", ...])`. One extra tool in the schema, ~15 lines of implementation, and the model started routing correctly on the first try: `⏺ git_checkout(main)` → permission prompt → result. No fabrication.
+
+Two things going on:
+
+1. **Discoverability beats instruction-following, for small models.** A tool *named* `git_checkout` is a ~10-token hint sitting in the model's working context every turn. "Remember you could shell out to `bash` and construct the right command" is an instruction the model has to follow — instructions lose to pattern-match every time on a 7b. Naming the thing drags the model toward it.
+
+2. **Narrow schemas reduce the surface for improvisation.** `bash(command: str)` is wide open — the model has to compose a command string, which is also exactly what narration looks like, which is why it slides into narration. `git_checkout(branch: str)` accepts one scalar; there's nothing to improvise. When the schema shape matches the intent shape, the model does less work and gets it right more often.
+
+When to reach for this:
+- The model keeps "doing" an action without actually calling a tool
+- `bash` invocations for the same verb keep showing up (good signal to promote to a named tool)
+- The correct tool call is the same ~2-3 invocations with small variations (the schema would be narrow)
+
+When **not** to:
+- Every new verb shouldn't get its own tool — the schema list is sent on every turn and costs tokens
+- If a bigger model handles the same task correctly via `bash`, the issue is model capacity, not tool design — document the model requirement instead
+- Don't replace `bash`. Keep it as the escape hatch for everything not worth a dedicated tool.
+
+This is why Cursor has `search_codebase` and `read_file` instead of relying on shell; why Claude Code has a dedicated `TodoWrite` instead of telling the model to edit a markdown file. Not every design — Claude Code uses `Bash` heavily — but whenever a specific verb keeps going wrong, the answer is usually a narrower tool, not a stronger prompt.
+
+See: `tools/git.py`, `main.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
 
 ---
 

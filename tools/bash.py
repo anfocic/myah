@@ -39,8 +39,10 @@ def bash(command: str, cwd: str = ".", timeout: int = DEFAULT_TIMEOUT):
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {timeout}s: {command}"
-    except Exception as e:
-        return f"Error running command: {e}"
+    except OSError as e:
+        # Narrow to OSError so genuinely unexpected failures still surface
+        # as tracebacks instead of being flattened into a generic message.
+        return f"Error running command ({type(e).__name__}): {e}"
 
     stdout = _truncate(proc.stdout or "", "stdout").rstrip()
     stderr = _truncate(proc.stderr or "", "stderr").rstrip()

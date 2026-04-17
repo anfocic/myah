@@ -30,6 +30,9 @@ Teaches how real harnesses are structured.
 | Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small | Shipped |
 | Slash commands (`/clear`, `/context`, `/help`) | The control-plane vs. data-plane split — commands the harness handles vs. text the model sees | Small | Shipped |
 | `harness_info` tool | Model-side introspection: model name, ctx budget, cwd, git branch, date, tool list. Complement of `/context` on the data plane | Small | Shipped |
+| Manual compact (`/compact`) | User-initiated context reset — keep last 2 turns, summarize the rest. Complements the reactive auto-trim | Small | Shipped |
+| Rewind (`/rewind N`) | In-memory snapshot stack → pop-back undo for conversation state. Different job than `/retry` (undo, not re-run) | Small | Shipped |
+| Microcompact | Elide stale tool results mid-turn when a single turn racks up many tool calls. Intra-turn counterpart to `trim_history` | Small | Shipped |
 | Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | |
 | Hooks | Pre/post tool-call hooks the user can configure. Teaches extensibility | Small | |
 
