@@ -40,7 +40,7 @@ Nice to have; smaller pedagogical payoff per unit of effort.
 | Feature | Why it matters | Effort | Status |
 |---|---|---|---|
 | Persistent input history (`~/.mia_history`, arrow keys) | Re-run previous prompts via readline, across sessions | Trivial | Shipped |
-| Env context injection | Auto-inject cwd, git branch, OS, date into the system prompt | Small | |
+| Env context injection | Auto-inject cwd, git branch, OS, date into the system prompt | Small | Shipped |
 | Plan mode | Non-executing mode where the model proposes before doing. Claude Code's `ExitPlanMode` tool | Small-medium | Shipped |
 | Streaming tool args | Watch `tool_calls` assemble token-by-token (Ollama supports this in newer versions) | Medium | |
 | Rendered markdown output | Code blocks, tables, headings via `rich.markdown.Markdown` | Small | Shipped |
