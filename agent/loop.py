@@ -24,6 +24,7 @@ from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens, truncate_tool_result
 from config import NUM_CTX, STREAM_DELAY_MS
 from providers import ProviderError, Usage, get_active_provider
+from security import annotate_if_injected
 
 
 def run_agent(
@@ -172,8 +173,17 @@ def run_agent(
                 on_tool_end=on_tool_end,
             )
             for content_str in results:
+                # Two-pass processing on every tool result:
+                # 1. annotate_if_injected scans for prompt-injection markers
+                #    and prepends a warning if any are found. The original
+                #    content is preserved — the model needs to see the
+                #    actual bytes to answer the user's question; the
+                #    warning just contextualizes it as DATA not instructions.
+                # 2. truncate_tool_result caps the size so a 5MB read_file
+                #    can't blow the context window (§20).
+                safe = annotate_if_injected(content_str)
                 messages.append(
-                    {"role": "tool", "content": truncate_tool_result(content_str)}
+                    {"role": "tool", "content": truncate_tool_result(safe)}
                 )
         else:
             if not content:
