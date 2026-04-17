@@ -54,7 +54,7 @@ jobs:
         # Only upload once per matrix run — the 3.12 job is authoritative.
         # Other Python versions still run the gate locally via pytest-cov.
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           files: ./coverage.xml
           fail_ci_if_error: false  # Codecov outages shouldn't break CI
