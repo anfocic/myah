@@ -69,6 +69,11 @@ Running notes on every concept introduced while building this harness. Read top-
 **Runtime configuration**
 37. [Startup constants vs runtime state — model switching](#37-startup-constants-vs-runtime-state--model-switching)
 
+**Maturity — scaling the codebase**
+38. [Typed state — TypedDict as a type-checker-only contract](#38-typed-state--typeddict-as-a-type-checker-only-contract)
+39. [Module boundaries — when the monolith stops teaching](#39-module-boundaries--when-the-monolith-stops-teaching)
+40. [Testing the loop — Protocol substitution via a scripted provider](#40-testing-the-loop--protocol-substitution-via-a-scripted-provider)
+
 ---
 
 ## 1. The agentic loop
@@ -725,6 +730,111 @@ The broader lesson is the split itself. Every harness eventually hits this quest
 Concept-wise this is the same pattern as §22 (control plane vs data plane): there's a layer that mutates without involving the model, and the model just reads current values each turn. Slash commands edit it, tools read it. The model is always downstream.
 
 See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
+
+## 38. Typed state — TypedDict as a type-checker-only contract
+
+The REPL's shared state started as a plain `dict` — `state["history"]`, `state["plan_mode"]`, `state["snapshots"]`. Worked, scaled, cost nothing. Until you type `state["plaan_mode"]` at 2am and the model quietly ignores your toggle for three turns because Python's bare-dict access silently returns `None` on an unknown key.
+
+There are three common fixes. Each has a different cost profile:
+
+| Option | What you get | What you pay |
+|---|---|---|
+| `dict` (status quo) | Zero ceremony; JSON-dumps trivially | Typos are silent; can't tell what keys belong by reading a signature |
+| `@dataclass` | Autocomplete + type-check on `state.plan_mode`; docs itself | Every `state["x"]` across the codebase becomes `state.x` — churn touches every call site; needs `asdict()` to JSON-serialize |
+| `TypedDict` | Type-check on `state["plaan_mode"]`; editor autocomplete; zero runtime change | Only helps if you actually run mypy/pyright; runtime is still a plain dict |
+
+Mia picks **TypedDict**. Runtime shape stays `dict`, so every `state["history"]` still works and the session file still JSON-dumps through `json.dump(state["history"], f)` without special casing. What you gain is the type checker calling out `state["plaan_mode"]` at write time:
+
+```
+TypedDict "State" has no key "plaan_mode"
+Did you mean "plan_mode"?
+```
+
+That's the whole trade — **no runtime cost, no migration churn, catch typos for free if you run the checker.**
+
+Two design choices worth naming:
+
+1. **`NotRequired` for transient keys.** `_retry_input` is set by `cmd_retry` and popped by the REPL loop on the next iteration — it's a message-passing hop, not a persistent field. Marking it `NotRequired[str]` tells the type checker the key might not be present, so reads have to handle `None` explicitly. Required-by-default catches the other bug: if you ever make a new State without `history`, the checker flags it before the first access crashes.
+
+2. **Keep the widened reader signature for cross-package consumers.** `tools/harness.py:harness_snapshot` takes `Mapping[str, Any]` instead of `State` directly. It reads fields the REPL owns but doesn't belong in a tight coupling with the REPL's TypedDict — importing `State` into `tools/` would pull a circular dependency. `Mapping[str, Any]` accepts both the TypedDict and a plain dict; it's the "I just want to read a few string keys" contract. Sub-pattern: when you add a TypedDict to a module that others depend on, widen the consumer-side signature with a read-only protocol instead of forcing everyone to import the concrete type.
+
+The broader pedagogy: **when you reach for a dataclass, ask whether a TypedDict does the job instead.** Dataclasses earn their keep when you need methods, validation, or frozen instances. For "a bag of string keys the editor should lint," a TypedDict is cheaper and keeps the JSON story trivial.
+
+See: `repl/state.py` (State TypedDict + `new_state()` factory), `tools/harness.py` (widened `Mapping[str, Any]` reader signature)
+
+## 39. Module boundaries — when the monolith stops teaching
+
+`main.py` grew to 807 lines. `agent.py` grew to 598. Both started as honest single-file scripts and both slid into "scroll to find where the tool registry lives." At that size the pedagogy also starts leaking: a reader looking for *how plan mode works* has to mentally separate four unrelated concerns sharing a module.
+
+Decomposition has a simple rule that's easy to screw up: **split along concerns, not along line count.** A 400-line file that does one thing is fine. A 200-line file that does four things is noise. The move isn't "halve the file"; it's "name the concerns out loud, then make each one a module."
+
+For Mia, the concerns that had accumulated in `main.py`:
+
+- REPL loop (the `while True` at the bottom)
+- Session persistence (load/save session, input history)
+- Tool schema + dispatcher (`tools = [...]`, `make_execute_tool`)
+- Slash commands + dispatcher (`cmd_*`, `SLASH_COMMANDS`, `handle_slash`)
+- Prompt chrome (branch badge, hint line, ctx tag, tab completer)
+- Tool-call display callbacks (`on_tool_start`, `on_tool_end`, `_args_preview`)
+
+Six concerns in one file. That became a `repl/` package with one module per concern plus a thin `main.py` (119 lines) whose only job is composition: import from siblings, run the turn loop.
+
+`agent.py` got the same treatment — five concerns (tokens, status/logging, context management, system-prompt assembly, the core loop) became five modules under `agent/`.
+
+Three design choices worth naming:
+
+1. **Re-export the public surface from `__init__.py`.** Callers still do `from agent import run_agent, trim_history, ...` — the package decomposition is invisible to consumers. Without this discipline, a refactor becomes a migration that touches every caller; with it, the public API is a contract the `__init__.py` pins down and the internal layout is free to move.
+
+2. **Shared singletons live in their own tiny module.** `repl/console.py` is 8 lines and its only job is to hold the `rich.Console()` instance every other module reads from. An alternative — each module creating its own Console — usually works but breaks when one module's status spinner needs to be stopped before another module prints. Two-line modules feel silly in the moment and save the ambiguity forever.
+
+3. **Shared constants live above the re-exports.** `READ_ONLY_TOOLS` is defined at the top of `agent/__init__.py` because both `agent/loop.py` and `agent/system_prompt.py` import it — if either module owned it, the other's import would cycle. The package `__init__` is the one place guaranteed to finish importing before anyone else needs a name from the package. Use it for genuinely shared constants; don't use it for re-export shenanigans unrelated to its role in the import graph.
+
+The trap to avoid: **splitting too early.** A new harness should stay monolithic until the first moment you can't remember where a function lives without grepping. At that point the concerns have announced themselves, and the split becomes mechanical. Splitting earlier — by vibes, by line count — usually produces modules that don't align with the actual seams, and you end up with circular imports and six-line files that add more cognitive overhead than they remove.
+
+A useful tell: **if re-exports in `__init__.py` keep every caller unchanged, the split is probably right.** If callers start using `agent.loop.run_agent` instead of `agent.run_agent`, you've either missed a re-export or the seam you picked isn't the real one.
+
+See: `agent/__init__.py` (re-export surface + top-level `READ_ONLY_TOOLS`), `repl/__init__.py`, `repl/console.py` (shared singleton), `main.py` (thin composition layer)
+
+## 40. Testing the loop — Protocol substitution via a scripted provider
+
+Unit tests for `trim_history`, `microcompact`, `compact_history` are easy — they're pure functions over lists. Testing `run_agent` *itself* — the whole loop, including streaming, tool calls, history mutation, context accounting — is the hard part, because the loop is structured around a live Provider that talks to an LLM.
+
+The cheap version of that test: spin up Ollama in CI, hit it with a prompt, assert the harness didn't crash. That "test" is a network ping dressed up as verification. It doesn't exercise specific loop branches, it's non-deterministic, and a flaky network break looks like a failing test.
+
+The better version exploits a feature of the Provider abstraction (§30): `Provider` is a **Protocol**, not a concrete class. Anything with `name: str`, `model: str`, `stream_chat()`, and `chat()` satisfies it. So a test can substitute a `FakeProvider` that replays **scripted turns** — a list of `(content_chunks, tool_calls, usage)` tuples — and pop one off on each `stream_chat` call:
+
+```python
+class FakeProvider:
+    name = "fake"
+    model = "fake-model-v1"
+
+    def __init__(self, script: list[ScriptedTurn]):
+        self._script = list(script)
+
+    def stream_chat(self, messages, tools, num_ctx):
+        turn = self._script.pop(0)
+        for chunk in turn.content_chunks:
+            yield StreamChunk(content_delta=chunk)
+        if turn.tool_calls:
+            yield StreamChunk(tool_calls=turn.tool_calls)
+        yield StreamChunk(done=True, usage=Usage(...))
+```
+
+`set_active_provider(FakeProvider(script))` from a test fixture, run the loop, assert whatever you want — content, history shape, tool execution order, ctx accounting. The test is deterministic (no network), fast (~60ms per case), and pins the contract the loop relies on.
+
+Four design choices worth naming:
+
+1. **Script the turns, not the bytes.** A `ScriptedTurn` dataclass holds `content_chunks: list[str]` and `tool_calls: list[ToolCall] | None`. That level of abstraction is what the loop actually consumes. Going lower — scripting raw SSE bytes — would test the adapter layer (which already has its own tests), not the loop. Going higher — "script a full conversation" — would lose the ability to interleave tool results the loop computed against the next turn's fake response.
+
+2. **Teardown fixture restores the active provider.** `set_active_provider` mutates module-level state; a test that swaps it without restoring would poison every subsequent test's import. The fixture grabs the current provider in `setup`, yields the installer function to the test, and restores it in `teardown`. Standard pytest discipline, worth doing early because debugging "why does `test_compact` fail only when run after `test_integration`?" is a painful way to learn about module-level state.
+
+3. **Test the cases the unit tests can't reach.** Good integration cases here: tool-use → final answer (two turns, the classic agent flow), permission denial returning as a tool result (§16's behavior verified end-to-end), multiple tool_calls in one turn (parallel execution from §25, assert set-equality on results since order is non-deterministic). The unit tests can't verify any of those because they don't span the full loop.
+
+4. **AssertionError when the script runs dry.** `FakeProvider` asserts if the loop calls `stream_chat` more times than the script has turns. That turns "the loop iterated one too many times" from a silent infinite-loop-until-timeout into a clear `ran out of scripted turns` message pointing at the line. Cheap defensive programming, huge debugging payoff.
+
+The broader pedagogy is about the Protocol abstraction **doing work for you** that you didn't design it for. `Provider` was split out to support Ollama and OpenAI-compat. The happy side effect is that any test can substitute any implementation — the abstraction pays dividends whenever substitution is useful, not just for the cases you originally had in mind.
+
+See: `tests/test_integration.py`, `providers/base.py:Provider` (the Protocol being satisfied), `providers/__init__.py:set_active_provider`
 
 ---
 
