@@ -1,13 +1,30 @@
-MODEL_PROVIDER = "ollama"
-MODEL_NAME = "qwen2.5:7b-instruct"
-OLLAMA_BASE_URL = "http://localhost:11434"
+import os
+
+# Which backend the provider layer talks to. Override via env:
+#     MIA_PROVIDER=openai-compat python main.py
+MODEL_PROVIDER = os.environ.get("MIA_PROVIDER", "ollama")  # "ollama" | "openai-compat"
+
+# ── Ollama ────────────────────────────────────────────────────────────────────
+OLLAMA_MODEL = "qwen2.5:7b-instruct"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# ── OpenAI-compatible HTTP (llama.cpp server, LM Studio, vLLM, Groq, Together, …)
+OPENAI_COMPAT_MODEL = os.environ.get("OPENAI_COMPAT_MODEL", "gpt-4o-mini")
+OPENAI_COMPAT_BASE_URL = os.environ.get("OPENAI_COMPAT_BASE_URL", "http://localhost:8080/v1")
+# API key read inside the factory from OPENAI_COMPAT_API_KEY (empty is fine for
+# local servers that don't check auth).
+
+# Active model name, derived from provider. Both /context and harness_info
+# already read this, so the slash/tool surfaces stay provider-agnostic.
+MODEL_NAME = OLLAMA_MODEL if MODEL_PROVIDER == "ollama" else OPENAI_COMPAT_MODEL
 
 # Context window budget — set explicitly so we know the real limit.
 # qwen2.5:7b default is 4096; bump to 8192 if your Ollama build supports it.
+# For openai-compat this is advisory — most servers ignore num_ctx in the body.
 NUM_CTX = 4096
 
 # Extra delay per streamed chunk, in milliseconds. Set to 0 to stream at the
-# model's native rate. A small delay (~8ms) slows output ~30% so it's easier
+# provider's native rate. A small delay (~8ms) slows output ~30% so it's easier
 # to read as it arrives; tune to taste.
 STREAM_DELAY_MS = 100
 
