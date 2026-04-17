@@ -7,7 +7,7 @@ from agent import status_line, run_agent, summarize_dropped, trim_history
 from config import NUM_CTX
 from permissions import check_permission
 from tools.files import edit_file, read_file, write_file
-from tools.search import grep
+from tools.search import glob, grep
 from tools.utils import get_current_time
 
 console = Console()
@@ -93,6 +93,27 @@ tools = [
     {
         "type": "function",
         "function": {
+            "name": "glob",
+            "description": "Find files by name or glob pattern, recursively. Use this to resolve a bare filename (e.g. 'search.py') to its full path before reading or editing. Accepts 'search.py', '*.py', or '**/*.md'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Filename or glob pattern to match",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search from. Defaults to current working directory.",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep",
             "description": "Regex search across files under a path. Returns matching file paths by default, or path:line:text when output_mode is 'content'.",
             "parameters": {
@@ -144,6 +165,8 @@ def execute_tool(name, args):
                 args["new_string"],
                 bool(args.get("replace_all", False)),
             )
+        elif name == "glob":
+            return glob(args["pattern"], args.get("path", "."))
         elif name == "grep":
             return grep(
                 args["pattern"],
