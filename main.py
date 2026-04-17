@@ -21,6 +21,13 @@ from agent import (
 from display import render_diff, render_file_preview
 from config import NUM_CTX
 from permissions import check_permission
+from providers import (
+    ProviderError,
+    build_provider,
+    get_active_provider,
+    list_ollama_models,
+    set_active_provider,
+)
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
 from tools.git import git_checkout
@@ -455,7 +462,7 @@ def _build_prompt(state: State) -> str:
 
 def _print_hint() -> None:
     console.print(
-        "[dim]/help · /plan · /compact · /rewind · /retry · "
+        "[dim]/help · /plan · /model · /compact · /rewind · "
         "ctrl+c to interrupt[/dim]"
     )
 
@@ -609,6 +616,66 @@ def cmd_rewind(state: State, arg: str = "") -> None:
     )
 
 
+def cmd_model(state: State, arg: str = "") -> None:
+    """List or swap the active model at runtime. No arg → list locally
+    available ollama tags + the current model. With arg → swap.
+
+    Arg shapes:
+        /model qwen2.5:14b             — same provider, different model
+        /model ollama:qwen2.5:14b      — force ollama backend
+        /model openai-compat:gpt-4o-mini — cross-provider swap
+    """
+    current = get_active_provider()
+    if not arg.strip():
+        console.print(
+            f"[bold]current:[/bold] {current.model} [dim]({current.name})[/dim]"
+        )
+        tags = list_ollama_models()
+        if tags:
+            console.print("[bold]ollama (local):[/bold]")
+            for t in tags:
+                marker = "[cyan]*[/cyan] " if t == current.model else "  "
+                console.print(f"  {marker}{t}")
+        else:
+            console.print(
+                "[dim]↳ no ollama daemon reachable (or no models pulled)[/dim]"
+            )
+        console.print(
+            "[dim]↳ swap with /model <name> or /model <provider>:<name>[/dim]"
+        )
+        return
+
+    # Parse "<provider>:<model>" vs plain "<model>" (keep current provider).
+    if ":" in arg and arg.split(":", 1)[0] in {"ollama", "openai-compat"}:
+        provider_name, model = arg.split(":", 1)
+    else:
+        provider_name, model = current.name, arg
+
+    # For ollama, validate against the local tag list when possible. Saves
+    # the user a failed-turn round-trip to discover a typo.
+    if provider_name == "ollama":
+        tags = list_ollama_models()
+        if tags and model not in tags:
+            console.print(
+                f"[dim]↳ {model!r} not in local ollama tags "
+                f"({', '.join(tags[:6])}{'...' if len(tags) > 6 else ''}). "
+                "Pull it first (`ollama pull <name>`) or use an exact tag.[/dim]"
+            )
+            return
+
+    try:
+        new_provider = build_provider(provider_name, model)
+    except (ValueError, ProviderError) as e:
+        console.print(f"[dim red]↳ swap failed: {e}[/dim red]")
+        return
+
+    set_active_provider(new_provider)
+    console.print(
+        f"[dim]↳ switched to {model} "
+        f"\\[{provider_name}] (takes effect next turn)[/dim]"
+    )
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
@@ -618,6 +685,7 @@ SLASH_COMMANDS: dict = {
     "/retry": (cmd_retry, "re-run the last turn (pops + resubmits)"),
     "/compact": (cmd_compact, "summarize older turns, keep the last 2"),
     "/rewind": (cmd_rewind, "undo N turns (default 1) via in-memory snapshots"),
+    "/model": (cmd_model, "list or swap the active model (e.g. /model qwen2.5:14b)"),
 }
 
 
