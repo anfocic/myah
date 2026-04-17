@@ -29,6 +29,7 @@ Teaches how real harnesses are structured.
 | Multi-provider abstraction | Claude Code runs on Anthropic; Mia only on Ollama. Abstracting teaches protocol design | Medium | |
 | Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small | |
 | Slash commands (`/clear`, `/context`, `/help`) | The control-plane vs. data-plane split — commands the harness handles vs. text the model sees | Small | Shipped |
+| `harness_info` tool | Model-side introspection: model name, ctx budget, cwd, git branch, date, tool list. Complement of `/context` on the data plane | Small | Shipped |
 | Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | |
 | Hooks | Pre/post tool-call hooks the user can configure. Teaches extensibility | Small | |
 

@@ -11,6 +11,7 @@ from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
+from tools.harness import harness_info
 from tools.search import glob, grep
 from tools.utils import get_current_time
 
@@ -187,49 +188,74 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "harness_info",
+            "description": "Introspect the harness you are running in: current model, context window size (num_ctx), context used in the previous turn, number of conversation turns in history, working directory, git branch, today's date, and the list of tools available to you. Call this when the user asks about the harness, model, or context usage, or when you need to decide whether to summarize / shorten your reply because ctx is getting tight.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 
-def execute_tool(name, args):
-    # Args come from the model, which occasionally omits required keys.
-    # Return the error as a tool result so the model can recover instead of
-    # crashing the REPL.
-    try:
-        if name == "get_current_time":
-            return get_current_time()
-        elif name == "read_file":
-            return read_file(
-                args["path"],
-                int(args.get("offset", 1)),
-                int(args["limit"]) if "limit" in args else None,
-            )
-        elif name == "write_file":
-            return write_file(args["path"], args["content"])
-        elif name == "edit_file":
-            return edit_file(
-                args["path"],
-                args["old_string"],
-                args["new_string"],
-                bool(args.get("replace_all", False)),
-            )
-        elif name == "glob":
-            return glob(args["pattern"], args.get("path", "."))
-        elif name == "grep":
-            return grep(
-                args["pattern"],
-                args.get("path", "."),
-                args.get("glob"),
-                args.get("output_mode", "files_with_matches"),
-            )
-        elif name == "bash":
-            return run_bash(
-                args["command"],
-                args.get("cwd", "."),
-                int(args.get("timeout", 30)),
-            )
-        return "Tool not found"
-    except KeyError as e:
-        return f"Missing required argument: {e}"
+def make_execute_tool(state: dict):
+    """Factory so the harness_info tool can close over the live REPL state
+    (ctx_used, history). Passing state as a function arg every turn would work
+    but would also leak REPL internals into run_agent's signature; a closure
+    keeps agent.py unaware of the state dict."""
+    tool_names = [t["function"]["name"] for t in tools]
+
+    def execute_tool(name, args):
+        # Args come from the model, which occasionally omits required keys.
+        # Return the error as a tool result so the model can recover instead of
+        # crashing the REPL.
+        try:
+            if name == "get_current_time":
+                return get_current_time()
+            elif name == "read_file":
+                return read_file(
+                    args["path"],
+                    int(args.get("offset", 1)),
+                    int(args["limit"]) if "limit" in args else None,
+                )
+            elif name == "write_file":
+                return write_file(args["path"], args["content"])
+            elif name == "edit_file":
+                return edit_file(
+                    args["path"],
+                    args["old_string"],
+                    args["new_string"],
+                    bool(args.get("replace_all", False)),
+                )
+            elif name == "glob":
+                return glob(args["pattern"], args.get("path", "."))
+            elif name == "grep":
+                return grep(
+                    args["pattern"],
+                    args.get("path", "."),
+                    args.get("glob"),
+                    args.get("output_mode", "files_with_matches"),
+                )
+            elif name == "bash":
+                return run_bash(
+                    args["command"],
+                    args.get("cwd", "."),
+                    int(args.get("timeout", 30)),
+                )
+            elif name == "harness_info":
+                return harness_info(
+                    state,
+                    model=MODEL_NAME,
+                    provider=MODEL_PROVIDER,
+                    num_ctx=NUM_CTX,
+                    tool_names=tool_names,
+                )
+            return "Tool not found"
+        except KeyError as e:
+            return f"Missing required argument: {e}"
+
+    return execute_tool
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
@@ -308,6 +334,7 @@ if __name__ == "__main__":
     # latest values. trim_history rebinds the list, so we can't keep a
     # separate local `history` without drift.
     state: dict = {"history": [], "ctx_used": 0}
+    execute_tool = make_execute_tool(state)
     while True:
         try:
             user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
