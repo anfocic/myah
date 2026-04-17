@@ -12,7 +12,7 @@ These are the differences you notice in the first 5 minutes of using Claude Code
 
 | Feature | Why it matters | Effort | Status |
 |---|---|---|---|
-| Real tool suite (`Edit`, `Grep`, `Glob`, `Bash`) | `write_file` nuking whole files is the biggest toy-tell. Diff-style `Edit` + targeted `Grep` change what the model can actually do on real codebases | Medium — each tool is small, collectively large | `Edit` + `Grep` + `Glob` shipped; `Bash` still open |
+| Real tool suite (`Edit`, `Grep`, `Glob`, `Bash`) | `write_file` nuking whole files is the biggest toy-tell. Diff-style `Edit` + targeted `Grep` change what the model can actually do on real codebases | Medium — each tool is small, collectively large | Shipped |
 | Tool permissioning | Ask before destructive writes / bash commands. Teaches the trust model — Claude Code's whole UX revolves around this | Small | Shipped |
 | Parallel tool execution | When the model emits multiple `tool_calls`, run them concurrently via `asyncio` or threads. Teaches harness concurrency | Small-medium | |
 | Graceful Ctrl+C | Abort mid-stream without crashing the REPL or corrupting `history` | Small | |
