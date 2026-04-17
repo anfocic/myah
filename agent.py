@@ -12,15 +12,11 @@ from rich.live import Live
 from rich.markdown import Markdown
 
 from config import (
-    MODEL_NAME,
-    MODEL_PROVIDER,
     NUM_CTX,
     STREAM_DELAY_MS,
     TOOL_RESULT_MAX_BYTES,
 )
-from providers import ProviderError, Usage, get_provider
-
-_provider = get_provider()
+from providers import ProviderError, Usage, get_active_provider
 
 # Tools the plan-mode gate lets through unchanged. Everything else gets
 # short-circuited so the model can investigate (glob/grep/read) while
@@ -62,10 +58,11 @@ def log_response(
     """Append a single-line JSON record per turn for post-hoc study. Works
     for every provider because it takes normalized `Usage` + `ToolCall`s."""
     LOG_FILE.parent.mkdir(exist_ok=True)
+    provider = get_active_provider()
     entry = {
         "ts": time.time(),
-        "provider": _provider.name,
-        "model": _provider.model,
+        "provider": provider.name,
+        "model": provider.model,
         "prompt_tokens": usage.prompt_tokens if usage else None,
         "completion_tokens": usage.completion_tokens if usage else None,
         "ttft_ms": ttft_ms,
@@ -194,7 +191,7 @@ def summarize_dropped(dropped: list) -> str:
         f"{m['role']}: {m.get('content', '')}" for m in dropped
     )
     try:
-        content, _ = _provider.chat(
+        content, _ = get_active_provider().chat(
             messages=[
                 {
                     "role": "system",
@@ -253,10 +250,12 @@ _SERVED_VIA = {
 
 def _build_system_prompt(plan_mode: bool = False) -> str:
     """Base persona + env block + (if the cwd has a CLAUDE.md) project
-    context + (if plan mode) planning rules."""
-    served = _SERVED_VIA.get(MODEL_PROVIDER, f"served via {MODEL_PROVIDER}")
+    context + (if plan mode) planning rules. Reads model + provider from
+    the live adapter so /model swaps take effect on the next turn."""
+    provider = get_active_provider()
+    served = _SERVED_VIA.get(provider.name, f"served via {provider.name}")
     base = f"""You are Mia, a personal assistant.
-You are running on the {MODEL_NAME} model {served}.
+You are running on the {provider.model} model {served}.
 Answer truthfully about what model and provider you are based on the line above.
 
 Rules:
@@ -356,9 +355,10 @@ def run_agent(
         ttft_ms: int | None = None
         live: Live | None = None
 
+        provider = get_active_provider()
         try:
             try:
-                for chunk in _provider.stream_chat(messages, tools, NUM_CTX):
+                for chunk in provider.stream_chat(messages, tools, NUM_CTX):
                     if chunk.content_delta:
                         if not first_content_seen:
                             first_content_seen = True
@@ -398,7 +398,7 @@ def run_agent(
                     status.stop()
                 if console:
                     console.print(
-                        f"\n[red]Provider error ({_provider.name}):[/red] {e}"
+                        f"\n[red]Provider error ({provider.name}):[/red] {e}"
                     )
                 # Same discipline as Ctrl+C: history untouched, return to REPL.
                 return "", history, ctx_used, {

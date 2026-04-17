@@ -66,6 +66,9 @@ Running notes on every concept introduced while building this harness. Read top-
 **Tool design**
 36. [Narrow named tools > generic shell](#36-narrow-named-tools--generic-shell-for-small-models)
 
+**Runtime configuration**
+37. [Startup constants vs runtime state — model switching](#37-startup-constants-vs-runtime-state--model-switching)
+
 ---
 
 ## 1. The agentic loop
@@ -664,7 +667,64 @@ When **not** to:
 
 This is why Cursor has `search_codebase` and `read_file` instead of relying on shell; why Claude Code has a dedicated `TodoWrite` instead of telling the model to edit a markdown file. Not every design — Claude Code uses `Bash` heavily — but whenever a specific verb keeps going wrong, the answer is usually a narrower tool, not a stronger prompt.
 
+**Counterweight: tools have an ongoing prompt cost.** The schema list is serialized into every turn's prompt, so each added tool is permanent overhead whether it fires or not. A hypothetical 6-tool git family (`git_checkout`, `git_status`, `git_commit`, `git_diff`, `git_log`, `git_branch`) is roughly 300–500 tokens of fixed cost. At `NUM_CTX=4096` that's ≥7% of the budget spent on tools that might fire once a session. Past ~15 tools, routing actively gets *worse*, not better — the schema crowds the reasoning space and small models start picking wrong tools because the list no longer fits comfortably in attention.
+
+The "narrow is better" argument from the top of this section flips at the schema-crowding point. So the promotion rule isn't "build any verb that sometimes fails"; it's:
+
+1. The verb shows up **repeatedly** (skim `logs/agent.jsonl` for `bash(git X)` calls — 3+ occurrences of the same `X` is signal; 1–2 is noise)
+2. The narrowed schema **meaningfully reduces improvisation surface** (`git_commit(message)` qualifies; `git_status()` barely does — the env block already carries branch + dirty count for free, §28)
+3. The tool justifies its ongoing cost **before** you add it, not after
+
+Put another way: **tools are subscriptions, not one-time purchases.** Treat the schema list like a feature-flag budget. The right shape is usually 8–12 high-value tools plus `bash` as the escape hatch — not a sprawling client library.
+
 See: `tools/git.py`, `main.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
+
+## 37. Startup constants vs runtime state — model switching
+
+`config.py` reads `MODEL_NAME` / `MODEL_PROVIDER` from env at import. `agent.py` did `_provider = get_provider()` at module top. Both shortcuts made sense when the harness booted with a single model and never looked back — and both collapsed the moment the user wanted `/model qwen2.5:14b` without restarting.
+
+The problem isn't the values; it's *where they live*. A module-top assignment is a **startup constant**: set once, cached forever. A live swap needs **runtime state**: a slot everyone reads from *each time*. Mixing the two is the bug — a `/model` slash command that updates a state var while `_build_system_prompt` still reads `MODEL_NAME` will render the old name indefinitely and the model will start contradicting itself.
+
+The fix is a four-line pattern:
+
+```python
+# providers/__init__.py
+_active: Provider | None = None
+
+def get_active_provider() -> Provider:
+    global _active
+    if _active is None:
+        _active = get_provider()  # lazy init from config
+    return _active
+
+def set_active_provider(p: Provider) -> None:
+    global _active
+    _active = p
+```
+
+Then every consumer that used to do `from providers import _provider` or `from config import MODEL_NAME` switches to `get_active_provider()`. `agent.py` reads it inside `run_agent`, `_build_system_prompt`, `summarize_dropped`; `tools/harness.py` reads it in `harness_snapshot`. Each call site re-queries — so a swap propagates on the next turn without any further wiring.
+
+Three design choices worth naming:
+
+1. **Lazy init, not eager.** `_active = None` initially; first read constructs from config. Eager init (`_active = get_provider()` at module load) would mean an import-time failure if Ollama is down on startup — same failure mode as the original. Lazy defers the cost until something actually needs a provider, which also makes the module easier to test.
+
+2. **Setter, not rebind.** `set_active_provider(p)` instead of `providers._active = p`. The function boundary is the only place `global _active` appears — callers don't need to know it's a module-level. Same discipline as accessor functions in any language without proper encapsulation: if the storage ever needs to move (to a class, to a context manager, to state dict), only the setter changes.
+
+3. **Factory separated from registry.** `build_provider(name, model)` constructs an adapter without touching `_active`. `set_active_provider(p)` installs it. Two verbs so the slash command can **validate first, swap second** — `/model bogus:tag` builds a broken provider that gets discarded; the live one keeps working. If build + swap were one step, a failed swap would leave the harness wedged.
+
+**The `/model` command itself** is small once the plumbing is right:
+
+- No arg → call `list_ollama_models()` (ollama's `/api/tags`), show them with the current one starred.
+- `/model qwen2.5:14b` → same provider, new model.
+- `/model openai-compat:gpt-4o-mini` → cross-provider swap.
+
+Validation before swap: for ollama, check the arg is in the local tag list before building. Saves a failed turn the user would otherwise spend discovering their typo. For openai-compat there's no cheap local validation, so the build succeeds optimistically and the first turn surfaces any error through the existing `ProviderError` path (§30).
+
+The broader lesson is the split itself. Every harness eventually hits this question: **is this value a startup constant, or is it runtime state?** Defaults (`NUM_CTX`, file paths, env-derived base URLs) are fine as module-level — they don't change. Anything that could reasonably have a `/command` to toggle it (`plan_mode`, `debug`, `model`, future `provider`) belongs in a mutable slot from day one, even if the toggle ships later. Refactoring from "constant → getter" is mechanical but touches every call site; starting with a getter costs nothing.
+
+Concept-wise this is the same pattern as §22 (control plane vs data plane): there's a layer that mutates without involving the model, and the model just reads current values each turn. Slash commands edit it, tools read it. The model is always downstream.
+
+See: `providers/__init__.py` (build_provider + active-provider registry), `agent.py:_build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
 
 ---
 
