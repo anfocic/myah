@@ -233,6 +233,22 @@ Two lessons:
 
 See: also §13. Review transcript archived in `logs/agent.jsonl`.
 
+## 19. Shell access + why the permission layer matters here
+
+`bash(command, cwd, timeout)` is the first tool where the blast radius escapes the process. `write_file` can clobber a file you own; `bash` can `rm -rf`, `curl | sh`, or `git push --force`. Claude Code's entire reputation depends on the user-approval prompt that appears before every command.
+
+Three design choices that make shell-out safe enough to teach with:
+
+1. **`shell=True` is acceptable *because of* permissioning, not despite it.** Normally `shell=True` is a command-injection footgun — the "attacker" (any user input) can escape arg boundaries and build arbitrary pipelines. In this harness the "attacker" is the LLM, and every command it produces passes through `check_permission()` where the human sees the exact string before it runs. The defense isn't syntactic escaping; it's the human eye reading the command. This means the permission prompt *must* show the command in full — truncating it would erase the defense. `NEVER_TRUNCATE_KEYS` in `permissions.py` now covers both `path` and `command` for this reason.
+
+2. **Output capture has to be bounded.** `ls -R /`, `cat bigfile.log`, `find / -type f` all produce megabytes of text that would blast the context window in a single tool call. `MAX_OUTPUT_BYTES = 50_000` per stream, with a truncation marker the model can see and decide whether to narrow its query. Same philosophy as the `grep` 50-result cap and `read_file` per-line cap: **a tool's context cost should be bounded by the tool, not by hoping the model picks short-output commands**.
+
+3. **Timeout is a liveness guarantee, not a convenience.** Without `timeout`, `bash("sleep infinity")` or a hung network call freezes the REPL. Default 30s, configurable per call, failure returned as a tool-result string the model can recover from (same pattern as permission denial — errors are data, not exceptions).
+
+Exit codes, stdout, and stderr are all surfaced separately: the model sees `[stderr]` blocks and `exit: N` footers, so it can distinguish "test failed" from "test ran and passed." Dumping everything into one stream would collapse that distinction.
+
+See: `tools/bash.py`, `permissions.py:NEVER_TRUNCATE_KEYS`
+
 ---
 
 ## To cover next
