@@ -2,6 +2,56 @@
 
 Running notes on every concept introduced while building this harness. Read top-to-bottom to follow the build chronologically.
 
+## Contents
+
+**Loop basics**
+1. [The agentic loop](#1-the-agentic-loop)
+2. [Tool calling (OpenAI function-calling format)](#2-tool-calling-openai-function-calling-format)
+3. [History vs messages](#3-history-vs-messages)
+
+**Context window**
+4. [Context window](#4-context-window)
+5. [Token counting: estimate vs real](#5-token-counting-estimate-vs-real)
+6. [Context pressure → trim](#6-context-pressure--trim)
+7. [Summarize dropped turns](#7-summarize-dropped-turns)
+
+**TUI + feedback**
+8. [TUI with `rich`](#8-tui-with-rich)
+9. [Debug logging](#9-debug-logging)
+10. [Spinner feedback during blocking calls](#10-spinner-feedback-during-blocking-calls)
+
+**Model behaviour**
+11. [Models don't know what they are](#11-models-dont-know-what-they-are)
+12. [Streaming responses + TTFT](#12-streaming-responses--ttft)
+13. [Small models hallucinate library APIs](#13-small-models-hallucinate-library-apis)
+
+**Real tools + safety**
+14. [Surgical editing vs full-file writes](#14-surgical-editing-vs-full-file-writes)
+15. [Regex search as a tool](#15-regex-search-as-a-tool)
+16. [Tool permissioning / the trust model](#16-tool-permissioning--the-trust-model)
+17. [Line-numbered reads + the "what's on line N" failure mode](#17-line-numbered-reads--the-whats-on-line-n-failure-mode)
+18. [Confident-plausible regressions](#18-confident-plausible-regressions-13-second-flavor)
+19. [Shell access + why the permission layer matters here](#19-shell-access--why-the-permission-layer-matters-here)
+20. [Generic tool-result cap (defence in depth)](#20-generic-tool-result-cap-defence-in-depth)
+
+**REPL ergonomics**
+21. [Interrupts and input history](#21-interrupts-and-input-history--cheap-repl-ergonomics)
+22. [Control plane vs data plane — slash commands](#22-control-plane-vs-data-plane--slash-commands)
+23. [Harness introspection — tool closes over state](#23-harness-introspection--tool-closes-over-state)
+24. [Rendered markdown output](#24-rendered-markdown-output--streaming-a-live-canvas)
+
+**Concurrency + persistence**
+25. [Parallel tool execution](#25-parallel-tool-execution--serial-gate-parallel-body)
+26. [Session persistence + project context (CLAUDE.md)](#26-session-persistence--project-context-claudemd)
+
+**Planning + context injection**
+27. [Plan mode — cheap safety via prompt + tool gate](#27-plan-mode--cheap-safety-via-prompt--tool-gate)
+28. [Env injection — zero-tool-call context](#28-env-injection--zero-tool-call-context)
+29. [Plan mode revisited — read/write split](#29-plan-mode-revisited--readwrite-split)
+
+**Architecture**
+30. [Multi-provider abstraction](#30-multi-provider-abstraction--two-protocol-families-one-contract)
+
 ---
 
 ## 1. The agentic loop
