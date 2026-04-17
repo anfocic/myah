@@ -1,303 +1,29 @@
-# agent.py
-import json
-import os
-import platform
-import subprocess
+"""The agentic loop itself — `run_agent` plus its two helpers
+(`_run_tools_parallel`, `_debug_dump_messages`).
+
+Shape per CONCEPTS §1:
+
+  build messages → provider stream_chat →
+     if tool_calls: execute → append results → loop back
+     else: return final content
+
+Everything the loop needs about context/tokens/status/prompt is imported
+from siblings in this package. The loop doesn't know about rich styling,
+the REPL's State dict, or where messages came from — those all belong
+upstairs in main.py / repl/."""
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
-from pathlib import Path
 
 from rich.live import Live
 from rich.markdown import Markdown
 
-from config import (
-    NUM_CTX,
-    STREAM_DELAY_MS,
-    TOOL_RESULT_MAX_BYTES,
-)
+from agent import READ_ONLY_TOOLS
+from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
+from agent.status import log_response, status_line
+from agent.system_prompt import build_system_prompt
+from agent.tokens import estimate_tokens, truncate_tool_result
+from config import NUM_CTX, STREAM_DELAY_MS
 from providers import ProviderError, Usage, get_active_provider
-
-# Tools the plan-mode gate lets through unchanged. Everything else gets
-# short-circuited so the model can investigate (glob/grep/read) while
-# planning, but can't mutate state until plan mode is turned off.
-READ_ONLY_TOOLS = frozenset(
-    {"glob", "grep", "read_file", "get_current_time", "harness_info"}
-)
-
-LOG_FILE = Path("logs/agent.jsonl")
-
-
-def _fmt_tokens(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
-
-
-def status_line(
-    verb: str,
-    tokens: int,
-    elapsed: float,
-    progress: tuple[int, int] | None = None,
-) -> str:
-    """Compose the spinner status line: verb · progress · tokens · elapsed."""
-    parts = [f"[yellow]{verb}[/yellow]"]
-    if progress:
-        parts.append(f"[dim]({progress[0]}/{progress[1]})[/dim]")
-    parts.append(f"[dim]· ↑ {_fmt_tokens(tokens)} tokens[/dim]")
-    parts.append(f"[dim]· {elapsed:.0f}s[/dim]")
-    return " ".join(parts)
-
-
-def log_response(
-    usage: Usage | None,
-    messages: list,
-    *,
-    content: str,
-    tool_calls: list,
-    ttft_ms: int | None = None,
-) -> None:
-    """Append a single-line JSON record per turn for post-hoc study. Works
-    for every provider because it takes normalized `Usage` + `ToolCall`s."""
-    LOG_FILE.parent.mkdir(exist_ok=True)
-    provider = get_active_provider()
-    entry = {
-        "ts": time.time(),
-        "provider": provider.name,
-        "model": provider.model,
-        "prompt_tokens": usage.prompt_tokens if usage else None,
-        "completion_tokens": usage.completion_tokens if usage else None,
-        "ttft_ms": ttft_ms,
-        "content": content,
-        "tool_calls": [
-            {"name": tc.name, "arguments": tc.arguments} for tc in tool_calls
-        ],
-        "messages_in_prompt": len(messages),
-    }
-    with LOG_FILE.open("a") as f:
-        f.write(json.dumps(entry, default=str) + "\n")
-
-
-def estimate_tokens(messages: list) -> int:
-    """Rough token count: ~1 token per 4 characters of message content."""
-    total = sum(len(m.get("content") or "") for m in messages)
-    return total // 4
-
-
-def truncate_tool_result(result: str, max_bytes: int = TOOL_RESULT_MAX_BYTES) -> str:
-    """Cap a tool result's size so one giant read_file can't blow the ctx
-    window. Keeps head + tail (the useful bits are usually at the edges)."""
-    if len(result) <= max_bytes:
-        return result
-    dropped = len(result) - max_bytes
-    head = max_bytes // 2
-    tail = max_bytes - head
-    return (
-        result[:head]
-        + f"\n\n...[truncated {dropped} chars]...\n\n"
-        + result[-tail:]
-    )
-
-
-def trim_history(
-    history: list, ctx_used: int, num_ctx: int,
-    high: float = 0.8, target: float = 0.5,
-) -> tuple[list, list]:
-    """If ctx is over `high`, drop oldest user/assistant pairs until history
-    fits under `target`. Returns (new_history, dropped_messages)."""
-    if ctx_used <= high * num_ctx:
-        return history, []
-
-    target_tokens = int(target * num_ctx)
-    dropped: list = []
-    while len(history) >= 2 and estimate_tokens(history) > target_tokens:
-        dropped.extend(history[:2])
-        history = history[2:]
-    return history, dropped
-
-
-COMPACT_KEEP_LAST = 2  # turns retained after manual /compact — one turn
-                       # of continuity + the current user message's runway
-
-
-def compact_history(
-    history: list, keep_last: int = COMPACT_KEEP_LAST,
-) -> tuple[list, list]:
-    """Manual compact: keep the last `keep_last` user/assistant pairs, drop
-    the rest. Caller is expected to summarize the dropped turns and re-insert
-    the summary. Distinct from `trim_history` — that's reactive (fires on
-    pressure); this is proactive (fires when the user says so)."""
-    keep_msgs = keep_last * 2
-    if len(history) <= keep_msgs:
-        return history, []
-    dropped = list(history[:-keep_msgs]) if keep_msgs else list(history)
-    new_history = list(history[-keep_msgs:]) if keep_msgs else []
-    return new_history, dropped
-
-
-def apply_summary(history: list, dropped: list) -> list:
-    """Summarize `dropped` and prepend the summary as a system note to
-    `history`. If summarization fails or returns empty, `history` is
-    returned unchanged so the caller can decide how to announce the outcome.
-    Used by both manual /compact and auto-trim — one canonical shape for
-    post-compaction history."""
-    summary = summarize_dropped(dropped)
-    if not summary:
-        return history
-    return [
-        {
-            "role": "system",
-            "content": f"Summary of earlier conversation: {summary}",
-        },
-        *history,
-    ]
-
-
-MICROCOMPACT_KEEP_RECENT = 3
-MICROCOMPACT_CTX_THRESHOLD = 0.6
-ELIDED_PREFIX = "[tool result elided"
-
-
-def microcompact(messages: list, keep_recent: int = MICROCOMPACT_KEEP_RECENT) -> int:
-    """Elide old tool-result bodies in the live `messages` list. Mutates
-    in-place; returns the number of messages rewritten. Tool messages stay
-    in the array (the assistant's tool_calls still reference them), only
-    their `content` gets replaced with a tiny stub.
-
-    Intra-turn counterpart to `trim_history`: history-level trim can't reach
-    tool results because history only holds user/assistant pairs (§3). A
-    turn that does 10 read_files accumulates 10 fat tool messages that only
-    microcompact can shrink."""
-    tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    if len(tool_indices) <= keep_recent:
-        return 0
-    to_elide = tool_indices[:-keep_recent]
-    n = 0
-    for i in to_elide:
-        original = messages[i].get("content") or ""
-        if original.startswith(ELIDED_PREFIX):
-            continue  # already elided — don't re-stamp
-        messages[i] = {
-            "role": "tool",
-            "content": f"{ELIDED_PREFIX} — {len(original)} chars]",
-        }
-        n += 1
-    return n
-
-
-def summarize_dropped(dropped: list) -> str:
-    """Compress dropped turns into a terse note via the active provider."""
-    if not dropped:
-        return ""
-    transcript = "\n".join(
-        f"{m['role']}: {m.get('content', '')}" for m in dropped
-    )
-    try:
-        content, _ = get_active_provider().chat(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Summarize the following conversation turns in 2-3 terse sentences. Capture user intent, key facts, and any tool results. No filler.",
-                },
-                {"role": "user", "content": transcript},
-            ],
-            num_ctx=NUM_CTX,
-        )
-    except ProviderError:
-        return ""
-    return content
-
-
-def _git(*args: str) -> str | None:
-    """Run a git command, return stripped stdout, or None on any failure
-    (not a repo, git missing, detached state, etc.)."""
-    try:
-        out = subprocess.check_output(
-            ["git", *args],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=2,
-        )
-        return out.strip() or None
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
-
-def _env_block() -> str:
-    """Compact environment snapshot prepended to every system prompt so the
-    model has cwd / platform / git state on turn 1 without burning a tool
-    call. Kept small — ~80-120 tokens depending on git state."""
-    lines = [
-        f"cwd: {os.getcwd()}",
-        f"platform: {platform.system().lower()} ({platform.machine()})",
-        f"date: {date.today().isoformat()}",
-    ]
-    branch = _git("branch", "--show-current")
-    if branch:
-        main_ref = _git("rev-parse", "--abbrev-ref", "origin/HEAD")
-        main = main_ref.split("/", 1)[-1] if main_ref else "main"
-        porcelain = _git("status", "--porcelain")
-        dirty = len(porcelain.splitlines()) if porcelain else 0
-        lines.append(f"git: branch={branch} main={main} dirty={dirty}")
-    else:
-        lines.append("git: (not a repository)")
-    return "<env>\n" + "\n".join(lines) + "\n</env>"
-
-
-_SERVED_VIA = {
-    "ollama": "served locally via Ollama",
-    "openai-compat": "served via an OpenAI-compatible HTTP API",
-}
-
-
-def _build_system_prompt(plan_mode: bool = False) -> str:
-    """Base persona + env block + (if the cwd has a CLAUDE.md) project
-    context + (if plan mode) planning rules. Reads model + provider from
-    the live adapter so /model swaps take effect on the next turn."""
-    provider = get_active_provider()
-    served = _SERVED_VIA.get(provider.name, f"served via {provider.name}")
-    base = f"""You are Mia, a personal assistant.
-You are running on the {provider.model} model {served}.
-Answer truthfully about what model and provider you are based on the line above.
-
-Rules:
-- CRITICAL: You cannot perform actions by describing them. The only way to change state (checkout a branch, edit a file, run a command, read a file) is to call the relevant tool. Writing "Switching to main now" or "Running the tests..." without calling `bash` is a LIE — the state did not change.
-- CRITICAL: Never fabricate tool output. If you have not just called a tool, you do not know what it would have printed. Do not invent "HEAD is now at abc123...", "tests passed", file contents, or any other imagined result.
-- Always use tools when the task requires it. Anything involving git, the filesystem, shell commands, or reading/editing files requires a tool call.
-- After using a tool, respond with a short confirmation message grounded in the actual tool output.
-- Never return an empty response
-- For tasks needing multiple steps, do them one at a time
-- If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path"""
-
-    parts = [base, _env_block()]
-
-    # Re-read every turn so edits to CLAUDE.md take effect without restarting.
-    # File is typically small; re-read cost is negligible vs. an LLM call.
-    claude_md = Path("CLAUDE.md")
-    if claude_md.is_file():
-        try:
-            parts.append(
-                "Project context (CLAUDE.md — the user's instructions for this repo):\n"
-                + claude_md.read_text()
-            )
-        except OSError:
-            pass
-
-    if plan_mode:
-        parts.append(
-            "PLAN MODE is ON.\n\n"
-            "BEFORE proposing anything, you MUST investigate the codebase. For any "
-            "plan that touches existing code, call `glob` and/or `grep` to find "
-            "what exists, then `read_file` on the relevant files. Your plan must "
-            "reference specific files and line numbers you have actually read — "
-            "generic advice (\"add logging\", \"improve errors\", \"use rich\") "
-            "is not acceptable. If the user's request mentions an existing feature "
-            "or file, read the current implementation first.\n\n"
-            "After investigating, describe the proposed changes step-by-step and "
-            "wait for the user to confirm. Mutating tools (write_file, edit_file, "
-            "bash) are rejected automatically until /plan is toggled off. Read-only "
-            f"tools ({', '.join(sorted(READ_ONLY_TOOLS))}) still work."
-        )
-
-    return "\n\n".join(parts)
 
 
 def run_agent(
@@ -319,7 +45,7 @@ def run_agent(
     if history is None:
         history = []
     messages = (
-        [{"role": "system", "content": _build_system_prompt(plan_mode)}]
+        [{"role": "system", "content": build_system_prompt(plan_mode)}]
         + history
         + [{"role": "user", "content": user_input}]
     )
