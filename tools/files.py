@@ -1,7 +1,6 @@
 # tools/files.py
 import os
 
-
 DEFAULT_READ_LINES = 1000
 MAX_LINE_CHARS = 500
 
@@ -19,7 +18,7 @@ def read_file(path: str, offset: int = 1, limit: int | None = None):
     truncated so one pathological log line can't blow the context window.
     """
     try:
-        with open(os.path.expanduser(path), "r") as f:
+        with open(os.path.expanduser(path)) as f:
             all_lines = f.readlines()
     except FileNotFoundError:
         return f"File not found: {path}"
@@ -72,7 +71,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
     """
     try:
         expanded = os.path.expanduser(path)
-        with open(expanded, "r") as f:
+        with open(expanded) as f:
             content = f.read()
     except FileNotFoundError:
         return f"File not found: {path}"
