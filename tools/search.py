@@ -3,6 +3,8 @@ import os
 import re
 from pathlib import Path
 
+from security import is_within_cwd, refuse_outside_cwd
+
 SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "logs", "node_modules"}
 MAX_FILE_BYTES = 1_000_000
 MAX_RESULTS = 50
@@ -33,6 +35,9 @@ def grep(
     output_mode: "files_with_matches" (list of paths) or "content" (path:line:text).
     Caps results at MAX_RESULTS, skips binaries, dotdirs, and files > 1MB.
     """
+    if not is_within_cwd(path):
+        return refuse_outside_cwd(path)
+
     try:
         regex = re.compile(pattern)
     except re.error as e:
@@ -98,6 +103,9 @@ def glob(pattern: str, path: str = "."):
     Primary use: the model sees a bare filename in the user's message and
     needs to resolve it to a full path before calling read_file or edit_file.
     """
+    if not is_within_cwd(path):
+        return refuse_outside_cwd(path)
+
     root = Path(os.path.expanduser(path)).resolve()
     if not root.exists():
         return f"Path not found: {path}"
