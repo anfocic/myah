@@ -8,11 +8,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
-import ollama
 from rich.live import Live
 from rich.markdown import Markdown
 
-from config import MODEL_NAME, NUM_CTX, STREAM_DELAY_MS, TOOL_RESULT_MAX_BYTES
+from config import (
+    MODEL_NAME,
+    MODEL_PROVIDER,
+    NUM_CTX,
+    STREAM_DELAY_MS,
+    TOOL_RESULT_MAX_BYTES,
+)
+from providers import ProviderError, Usage, get_provider
+
+_provider = get_provider()
 
 # Tools the plan-mode gate lets through unchanged. Everything else gets
 # short-circuited so the model can investigate (glob/grep/read) while
@@ -44,35 +52,26 @@ def status_line(
 
 
 def log_response(
-    response,
+    usage: Usage | None,
     messages: list,
     *,
-    content_override: str | None = None,
-    tool_calls_override: list | None = None,
+    content: str,
+    tool_calls: list,
     ttft_ms: int | None = None,
 ) -> None:
-    """Append a single-line JSON record per ollama.chat call for post-hoc study.
-
-    Streaming mode builds content + tool_calls from chunks, so pass them in via
-    the `*_override` args. Non-streaming reads them from `response.message`.
-    """
+    """Append a single-line JSON record per turn for post-hoc study. Works
+    for every provider because it takes normalized `Usage` + `ToolCall`s."""
     LOG_FILE.parent.mkdir(exist_ok=True)
-    tool_calls = (
-        tool_calls_override
-        if tool_calls_override is not None
-        else (response.message.tool_calls or [])
-    )
     entry = {
         "ts": time.time(),
-        "prompt_eval_count": getattr(response, "prompt_eval_count", None),
-        "eval_count": getattr(response, "eval_count", None),
-        "eval_duration_ms": (getattr(response, "eval_duration", 0) or 0) // 1_000_000,
-        "total_duration_ms": (getattr(response, "total_duration", 0) or 0) // 1_000_000,
+        "provider": _provider.name,
+        "model": _provider.model,
+        "prompt_tokens": usage.prompt_tokens if usage else None,
+        "completion_tokens": usage.completion_tokens if usage else None,
         "ttft_ms": ttft_ms,
-        "content": content_override if content_override is not None else response.message.content,
+        "content": content,
         "tool_calls": [
-            {"name": tc.function.name, "arguments": tc.function.arguments}
-            for tc in tool_calls
+            {"name": tc.name, "arguments": tc.arguments} for tc in tool_calls
         ],
         "messages_in_prompt": len(messages),
     }
@@ -119,24 +118,26 @@ def trim_history(
 
 
 def summarize_dropped(dropped: list) -> str:
-    """Compress dropped turns into a terse note via the same model."""
+    """Compress dropped turns into a terse note via the active provider."""
     if not dropped:
         return ""
     transcript = "\n".join(
         f"{m['role']}: {m.get('content', '')}" for m in dropped
     )
-    response = ollama.chat(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": "Summarize the following conversation turns in 2-3 terse sentences. Capture user intent, key facts, and any tool results. No filler.",
-            },
-            {"role": "user", "content": transcript},
-        ],
-        options={"num_ctx": NUM_CTX},
-    )
-    return (response.message.content or "").strip()
+    try:
+        content, _ = _provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Summarize the following conversation turns in 2-3 terse sentences. Capture user intent, key facts, and any tool results. No filler.",
+                },
+                {"role": "user", "content": transcript},
+            ],
+            num_ctx=NUM_CTX,
+        )
+    except ProviderError:
+        return ""
+    return content
 
 
 def _git(*args: str) -> str | None:
@@ -175,13 +176,19 @@ def _env_block() -> str:
     return "<env>\n" + "\n".join(lines) + "\n</env>"
 
 
+_SERVED_VIA = {
+    "ollama": "served locally via Ollama",
+    "openai-compat": "served via an OpenAI-compatible HTTP API",
+}
+
+
 def _build_system_prompt(plan_mode: bool = False) -> str:
     """Base persona + env block + (if the cwd has a CLAUDE.md) project
     context + (if plan mode) planning rules."""
+    served = _SERVED_VIA.get(MODEL_PROVIDER, f"served via {MODEL_PROVIDER}")
     base = f"""You are Mia, a personal assistant.
-You are running on the {MODEL_NAME} model served locally via Ollama.
-You were NOT built by OpenAI or Anthropic. If asked who you are or what model
-you are, answer truthfully based on the line above. Do not claim any other origin.
+You are running on the {MODEL_NAME} model {served}.
+Answer truthfully about what model and provider you are based on the line above.
 
 Rules:
 - Always use tools when the task requires it
@@ -249,24 +256,15 @@ def run_agent(
 
         content_parts: list[str] = []
         tool_calls: list = []
-        final_chunk = None
+        final_usage: Usage | None = None
         first_content_seen = False
         ttft_ms: int | None = None
         live: Live | None = None
 
         try:
             try:
-                for chunk in ollama.chat(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    tools=tools,
-                    options={"num_ctx": NUM_CTX},
-                    stream=True,
-                ):
-                    final_chunk = chunk
-                    msg = chunk.message
-
-                    if msg.content:
+                for chunk in _provider.stream_chat(messages, tools, NUM_CTX):
+                    if chunk.content_delta:
                         if not first_content_seen:
                             first_content_seen = True
                             ttft_ms = int((time.time() - start) * 1000)
@@ -283,39 +281,62 @@ def run_agent(
                                     vertical_overflow="visible",
                                 )
                                 live.start()
-                        content_parts.append(msg.content)
+                        content_parts.append(chunk.content_delta)
                         if live is not None:
                             live.update(Markdown("".join(content_parts)))
                             if STREAM_DELAY_MS:
                                 time.sleep(STREAM_DELAY_MS / 1000)
 
-                    if msg.tool_calls:
-                        tool_calls.extend(msg.tool_calls)
+                    if chunk.tool_calls:
+                        tool_calls.extend(chunk.tool_calls)
+
+                    if chunk.done:
+                        final_usage = chunk.usage
             except KeyboardInterrupt:
                 # Let main.py decide how to render the abort. history is
                 # untouched because we only append on successful completion.
                 if status:
                     status.stop()
                 raise
+            except ProviderError as e:
+                if status:
+                    status.stop()
+                if console:
+                    console.print(
+                        f"\n[red]Provider error ({_provider.name}):[/red] {e}"
+                    )
+                # Same discipline as Ctrl+C: history untouched, return to REPL.
+                return "", history, ctx_used
         finally:
             if live is not None:
                 live.stop()
 
         content = "".join(content_parts)
         log_response(
-            final_chunk,
+            final_usage,
             messages,
-            content_override=content,
-            tool_calls_override=tool_calls,
+            content=content,
+            tool_calls=tool_calls,
             ttft_ms=ttft_ms,
         )
 
         ctx_used = (
-            getattr(final_chunk, "prompt_eval_count", None) or estimate_tokens(messages)
+            (final_usage.prompt_tokens if final_usage else None)
+            or estimate_tokens(messages)
         )
 
         if tool_calls:
-            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "assistant",
+                "content": content,
+                # Carry the tool calls on the assistant message. Ollama ignores
+                # unknown fields; the openai-compat adapter uses them to build
+                # the OpenAI-shaped tool_calls array with synthesized IDs.
+                "tool_calls": [
+                    {"name": tc.name, "arguments": tc.arguments}
+                    for tc in tool_calls
+                ],
+            })
             results = _run_tools_parallel(
                 tool_calls,
                 execute_tool,
@@ -364,8 +385,8 @@ def _run_tools_parallel(
 
     approved: list[tuple[int, str, dict]] = []
     for i, tc in enumerate(tool_calls):
-        name = tc.function.name
-        args = tc.function.arguments
+        name = tc.name
+        args = tc.arguments
         if plan_mode and name not in READ_ONLY_TOOLS:
             results[i] = (
                 f"Plan mode: {name} is a mutating tool and was not executed. "
