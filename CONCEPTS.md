@@ -259,6 +259,23 @@ Pedagogy: per-tool caps are a *contract* with tool authors; the harness cap is a
 
 See: `agent.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
 
+## 21. Interrupts and input history — cheap REPL ergonomics
+
+Two small changes, one theme: a REPL that doesn't punish the user for bad habits.
+
+**Ctrl+C while the model is streaming.** Without handling, `KeyboardInterrupt` propagates out of the `for chunk in ollama.chat(...)` generator, skips the `history.append` calls at the bottom of `run_agent`, and crashes the REPL entirely. Two places catch it:
+
+1. `agent.py:run_agent` wraps the streaming loop in `try/except KeyboardInterrupt`, stops the spinner, prints a closing newline to salvage the half-streamed line, and re-raises. It does *not* attempt to save partial content to `history` — the invariant is "history only contains complete turns." An aborted turn leaves no trace, which means the next turn doesn't see a truncated assistant reply that the model would then try to "continue."
+2. `main.py` catches `KeyboardInterrupt` around the whole `run_agent` + trim/summarize block and returns to the prompt with `↳ aborted — history unchanged`. The same handler at the input call exits the program on Ctrl+C/Ctrl+D at an empty prompt, since readline already gives you in-line editing cancellation before the exception fires.
+
+The pedagogy: **side effects belong at commit points, not mid-stream.** `run_agent` mutates `history` only after a clean completion. That single discipline is what makes interrupts free — no rollback logic, no "undo the partial append," just a skipped commit.
+
+**Arrow-key input history.** `import readline` in `main.py` is enough to give `input()` (which `console.input` wraps) line editing, history navigation, and Ctrl+R search for the session. Persisting across sessions = `readline.read_history_file(~/.mia_history)` on startup + `atexit.register(readline.write_history_file, ...)`. Two lines of setup, infinite re-runs of the same "grep for X" prompt.
+
+The surprise: the *import* is the feature. Python's `input()` silently upgrades its behavior if `readline` is importable. No API calls needed to get arrow keys working — just the side-effect of importing. Classic Python.
+
+See: `agent.py:run_agent` (try/except block), `main.py:_load_input_history`
+
 ---
 
 ## To cover next

@@ -169,36 +169,47 @@ def run_agent(
         first_content_seen = False
         ttft_ms: int | None = None
 
-        for chunk in ollama.chat(
-            model=MODEL_NAME,
-            messages=messages,
-            tools=tools,
-            options={"num_ctx": NUM_CTX},
-            stream=True,
-        ):
-            final_chunk = chunk
-            msg = chunk.message
+        try:
+            for chunk in ollama.chat(
+                model=MODEL_NAME,
+                messages=messages,
+                tools=tools,
+                options={"num_ctx": NUM_CTX},
+                stream=True,
+            ):
+                final_chunk = chunk
+                msg = chunk.message
 
-            if msg.content:
-                if not first_content_seen:
-                    first_content_seen = True
-                    ttft_ms = int((time.time() - start) * 1000)
-                    if status:
-                        status.stop()
+                if msg.content:
+                    if not first_content_seen:
+                        first_content_seen = True
+                        ttft_ms = int((time.time() - start) * 1000)
+                        if status:
+                            status.stop()
+                        if console:
+                            console.print(
+                                "\n[bold cyan]Mia[/bold cyan] [dim]›[/dim] ",
+                                end="",
+                                highlight=False,
+                            )
+                    content_parts.append(msg.content)
                     if console:
-                        console.print(
-                            "\n[bold cyan]Mia[/bold cyan] [dim]›[/dim] ",
-                            end="",
-                            highlight=False,
-                        )
-                content_parts.append(msg.content)
-                if console:
-                    console.print(msg.content, end="", highlight=False)
-                    if STREAM_DELAY_MS:
-                        time.sleep(STREAM_DELAY_MS / 1000)
+                        console.print(msg.content, end="", highlight=False)
+                        if STREAM_DELAY_MS:
+                            time.sleep(STREAM_DELAY_MS / 1000)
 
-            if msg.tool_calls:
-                tool_calls.extend(msg.tool_calls)
+                if msg.tool_calls:
+                    tool_calls.extend(msg.tool_calls)
+        except KeyboardInterrupt:
+            # Let main.py decide how to render the abort; just clean up transient
+            # UI state so the REPL isn't left with a spinner running or a
+            # half-streamed line. history is untouched because we only append
+            # on successful completion below.
+            if status:
+                status.stop()
+            if first_content_seen and console:
+                console.print()
+            raise
 
         if first_content_seen and console:
             console.print()  # close out the streamed line with a newline
