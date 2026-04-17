@@ -6,6 +6,7 @@ from rich.console import Console
 from agent import status_line, run_agent, summarize_dropped, trim_history
 from config import NUM_CTX
 from permissions import check_permission
+from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
 from tools.search import glob, grep
 from tools.utils import get_current_time
@@ -140,6 +141,31 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Run a shell command. Use for git, running tests, builds, package management, or any shell-only operation. Returns stdout, stderr, and exit code. Requires user permission for each call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory. Defaults to the REPL's current directory.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds. Defaults to 30.",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
 
 
@@ -173,6 +199,12 @@ def execute_tool(name, args):
                 args.get("path", "."),
                 args.get("glob"),
                 args.get("output_mode", "files_with_matches"),
+            )
+        elif name == "bash":
+            return run_bash(
+                args["command"],
+                args.get("cwd", "."),
+                int(args.get("timeout", 30)),
             )
         return "Tool not found"
     except KeyError as e:

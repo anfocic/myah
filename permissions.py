@@ -7,22 +7,26 @@ model proposes; the human allows.
 """
 import json
 
-SENSITIVE_TOOLS = {"write_file", "edit_file"}
+SENSITIVE_TOOLS = {"write_file", "edit_file", "bash"}
 _session_allowed: set[str] = set()
+
+
+NEVER_TRUNCATE_KEYS = {"path", "command"}
 
 
 def _render_args(args) -> str:
     """Pretty-print tool args, truncating long string values.
 
-    `path` is never truncated — the user is deciding whether to authorize a
-    destructive action on that specific file, so they need to see it in full.
+    Keys in NEVER_TRUNCATE_KEYS are shown in full — the user is authorizing
+    a destructive action *on that specific target*, so truncating the path
+    or command would let a long tail hide the real payload.
     """
     try:
         d = dict(args)
     except (TypeError, ValueError):
         return str(args)
     for k, v in list(d.items()):
-        if k == "path":
+        if k in NEVER_TRUNCATE_KEYS:
             continue
         if isinstance(v, str) and len(v) > 120:
             d[k] = v[:117] + "..."
