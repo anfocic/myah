@@ -73,11 +73,23 @@ Runtime swap via `/model <name>` — no restart.
 ## Architecture
 
 ```
-main.py        REPL, slash commands, tool registry, display callbacks
-agent.py       Agentic loop, context management, system prompt
+main.py        Thin REPL entry point — composes modules, runs the turn loop
 config.py      Startup constants (env-derived)
 permissions.py User-approval gate for destructive tools
-display.py     Rich renderers (diffs, file previews)
+display.py     Rich renderers + tool-call callbacks
+agent/         Agentic loop layer
+  loop.py           run_agent, parallel tool execution
+  context.py        trim, compact, microcompact, summarize
+  system_prompt.py  persona + env block + CLAUDE.md + plan mode
+  tokens.py         token estimate + tool-result cap
+  status.py         status line + JSONL logging
+repl/          REPL composition
+  commands.py       slash commands + dispatcher
+  tool_registry.py  tool schemas + dispatcher factory
+  persistence.py    session + input history
+  ui.py             prompt, hint, ctx_tag, completer
+  state.py          State TypedDict + snapshot constants
+  console.py        shared rich.Console singleton
 providers/     Protocol + Ollama / OpenAI-compat adapters
 tools/         Tool implementations (files, search, bash, git, harness)
 tests/         pytest suite
