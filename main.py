@@ -7,6 +7,7 @@ import readline  # noqa: F401 — import enables arrow-key line editing + histor
 import subprocess
 import time
 from collections import deque
+from typing import NotRequired, TypedDict
 
 from rich.console import Console
 
@@ -38,6 +39,19 @@ HISTORY_FILE = os.path.expanduser("~/.mia_history")
 SESSION_FILE = os.path.expanduser("~/.mia_session.json")
 
 
+# Runtime-wise this is still a plain dict — TypedDict is a type-checker-only
+# construct, not a class. It documents the allowed keys/types so editors
+# catch typos like `state["plaan_mode"]` without changing any access shape.
+# _retry_input is transient: cmd_retry sets it, the REPL loop pops it.
+class State(TypedDict):
+    history: list
+    ctx_used: int
+    plan_mode: bool
+    debug: bool
+    snapshots: deque
+    _retry_input: NotRequired[str]
+
+
 def _load_input_history() -> None:
     try:
         readline.read_history_file(HISTORY_FILE)
@@ -54,7 +68,7 @@ def _save_input_history() -> None:
         pass
 
 
-def _load_session(state: dict) -> None:
+def _load_session(state: State) -> None:
     try:
         with open(SESSION_FILE) as f:
             loaded = json.load(f)
@@ -79,7 +93,7 @@ def _load_session(state: dict) -> None:
     state["history"] = valid
 
 
-def _save_session(state: dict) -> None:
+def _save_session(state: State) -> None:
     # Guarded against partial writes by going through a temp file.
     try:
         tmp = SESSION_FILE + ".tmp"
@@ -279,7 +293,7 @@ tools = [
 TOOL_NAMES = [t["function"]["name"] for t in tools]
 
 
-def make_execute_tool(state: dict):
+def make_execute_tool(state: State):
     """Factory so the harness_info tool can close over the live REPL state
     (ctx_used, history). Passing state through run_agent would leak REPL
     internals into its signature; a closure keeps agent.py state-ignorant."""
@@ -424,7 +438,7 @@ def _current_branch() -> str | None:
         return None
 
 
-def _build_prompt(state: dict) -> str:
+def _build_prompt(state: State) -> str:
     """`You [branch · plan · debug] ›` — badges only rendered when the
     condition applies so the prompt stays clean in the common case."""
     parts = []
@@ -482,7 +496,7 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
 # out of the tool layer teaches the control-plane / data-plane split: the
 # model never sees these — they're harness UX.
 
-def cmd_help(state, arg=""):
+def cmd_help(state: State, arg: str = "") -> None:
     lines = ["[bold]Commands:[/bold]"]
     for name, (_, desc) in SLASH_COMMANDS.items():
         lines.append(f"  [cyan]{name}[/cyan] — {desc}")
@@ -490,7 +504,7 @@ def cmd_help(state, arg=""):
     console.print("\n".join(lines))
 
 
-def cmd_clear(state, arg=""):
+def cmd_clear(state: State, arg: str = "") -> None:
     state["history"].clear()
     state["snapshots"].clear()  # else /rewind resurrects wiped history
     state["ctx_used"] = 0
@@ -498,7 +512,7 @@ def cmd_clear(state, arg=""):
     console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
 
-def cmd_context(state, arg=""):
+def cmd_context(state: State, arg: str = "") -> None:
     s = harness_snapshot(state, TOOL_NAMES)
     tag = ctx_tag(s["ctx_used"], s["num_ctx"])
     plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
@@ -512,7 +526,7 @@ def cmd_context(state, arg=""):
     )
 
 
-def cmd_plan(state, arg=""):
+def cmd_plan(state: State, arg: str = "") -> None:
     state["plan_mode"] = not state.get("plan_mode", False)
     status = "[yellow]ON[/yellow]" if state["plan_mode"] else "[dim]off[/dim]"
     console.print(
@@ -521,7 +535,7 @@ def cmd_plan(state, arg=""):
     )
 
 
-def cmd_debug(state, arg=""):
+def cmd_debug(state: State, arg: str = "") -> None:
     state["debug"] = not state.get("debug", False)
     status = "[magenta]ON[/magenta]" if state["debug"] else "[dim]off[/dim]"
     console.print(
@@ -530,7 +544,7 @@ def cmd_debug(state, arg=""):
     )
 
 
-def cmd_retry(state, arg=""):
+def cmd_retry(state: State, arg: str = "") -> None:
     """Pop the last user/assistant pair from history and re-run the user
     input. Useful when the model flubbed and we want a fresh sample without
     retyping. No-op (with a note) if there's no prior turn."""
@@ -544,7 +558,7 @@ def cmd_retry(state, arg=""):
     console.print(f"[dim]↳ retrying: {last_user[:80]}[/dim]")
 
 
-def cmd_compact(state, arg=""):
+def cmd_compact(state: State, arg: str = "") -> None:
     """Proactive compact. Keeps the last 2 user/assistant pairs, summarizes
     the rest into a system note at the start of history. Different from the
     auto-trim hysteresis (§6) that waits for 80% ctx — /compact lets the
@@ -568,7 +582,7 @@ def cmd_compact(state, arg=""):
     state["ctx_used"] = 0  # real count settles after the next provider call
 
 
-def cmd_rewind(state, arg=""):
+def cmd_rewind(state: State, arg: str = "") -> None:
     """Rewind N turns by popping the snapshot stack (§34). Snapshots are
     pushed before each run_agent call, so `/rewind 1` restores the state
     from just before the previous turn. N defaults to 1."""
@@ -607,7 +621,7 @@ SLASH_COMMANDS: dict = {
 }
 
 
-def handle_slash(user_input: str, state: dict) -> bool:
+def handle_slash(user_input: str, state: State) -> bool:
     """If user_input is a slash command, run it and return True. Else False.
     Every handler accepts `(state, arg="")`; commands that don't take an arg
     simply ignore it."""
@@ -636,7 +650,7 @@ if __name__ == "__main__":
     # state is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds the list, so we can't keep a
     # separate local `history` without drift.
-    state: dict = {
+    state: State = {
         "history": [],
         "ctx_used": 0,
         "plan_mode": False,
