@@ -39,11 +39,11 @@ Homepage = "https://github.com/anfocic/mia"
 Issues = "https://github.com/anfocic/mia/issues"
 
 [tool.setuptools]
-# Flat layout: top-level modules (agent, main, config, display, permissions)
-# alongside three packages (providers, tools, repl). No src/ dir — this is
-# a pedagogical harness, not a library.
-py-modules = ["agent", "main", "config", "display", "permissions"]
-packages = ["providers", "tools", "repl"]
+# Flat layout: top-level modules (main, config, display, permissions)
+# alongside four packages (agent, providers, tools, repl). No src/ dir —
+# this is a pedagogical harness, not a library.
+py-modules = ["main", "config", "display", "permissions"]
+packages = ["agent", "providers", "tools", "repl"]
 
 [tool.ruff]
 line-length = 100

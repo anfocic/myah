@@ -82,7 +82,7 @@ An agent harness is a `while True` around a chat call. Each turn:
 
 The "agentic" part is step 3 — the model can chain tool calls across many inner iterations before producing a final answer for the user.
 
-See: `agent.py:run_agent`
+See: `agent/loop.py:run_agent`
 
 ## 2. Tool calling (OpenAI function-calling format)
 
@@ -125,13 +125,13 @@ Two ways to measure:
 
 We use real when available, fall back to the estimate (e.g. for pre-call trim decisions).
 
-See: `agent.py:estimate_tokens`
+See: `agent/tokens.py:estimate_tokens`
 
 ## 6. Context pressure → trim
 
 When `ctx_used > 80% * NUM_CTX`, drop oldest user/assistant pairs from history until back under 50%. Two thresholds (`high` / `target`) create hysteresis — you don't trim-one-pair every single turn.
 
-See: `agent.py:trim_history`
+See: `agent/context.py:trim_history`
 
 ## 7. Summarize dropped turns
 
@@ -139,7 +139,7 @@ Naive trim loses information. The fix: before dropping, ask the model to compres
 
 Cost: one extra model call per trim event. Benefit: you keep the gist of old context instead of amnesia.
 
-See: `agent.py:summarize_dropped`
+See: `agent/context.py:summarize_dropped`
 
 ## 8. TUI with `rich`
 
@@ -158,7 +158,7 @@ Every `ollama.chat` call is appended as one JSON line to `logs/agent.jsonl`. Fie
 
 JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`, and unlike a single JSON array it doesn't require rewriting the whole file on each write.
 
-See: `agent.py:log_response`
+See: `agent/status.py:log_response`
 
 ## 10. Spinner feedback during blocking calls
 
@@ -166,7 +166,7 @@ See: `agent.py:log_response`
 
 Pattern: pass the `status` handle into the agent loop so it can report *what* it's currently doing — `Thinking...`, `Running read_file (1/2)`, `Summarizing dropped turns...` — along with a cumulative token count and elapsed seconds.
 
-See: `agent.py:status_line`, `main.py` REPL loop
+See: `agent/status.py:status_line`, `main.py` REPL loop
 
 ## 11. Models don't know what they are
 
@@ -174,7 +174,7 @@ Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm b
 
 **Identity lives in the system prompt.** If you want the model to correctly say "I'm Mia, running on qwen2.5 via Ollama," you have to tell it that, and you usually have to explicitly negate the false answers ("You were NOT built by OpenAI or Anthropic") because the training-data priors are strong.
 
-See: system prompt in `agent.py:run_agent`
+See: system prompt in `agent/loop.py:run_agent`
 
 ## 12. Streaming responses + TTFT
 
@@ -190,7 +190,7 @@ Implementation notes:
 - Tool calls arrive together (not token-by-token), typically with empty content — so tool-only turns bypass streaming naturally
 - `ttft_ms` logged per call; it's `null` for tool-only turns since no content ever appeared
 
-See: `agent.py:run_agent`
+See: `agent/loop.py:run_agent`
 
 ## 13. Small models hallucinate library APIs
 
@@ -251,7 +251,7 @@ Two pedagogical points worth noticing:
 
 Claude Code's whole UX is built on this trust model — every destructive action is a confirmation. It's worth seeing the minimal version to understand why that pattern exists.
 
-See: `permissions.py`, `agent.py:run_agent` (the callback wiring), `main.py` (closure per turn)
+See: `permissions.py`, `agent/loop.py:run_agent` (the callback wiring), `main.py` (closure per turn)
 
 ---
 
@@ -324,7 +324,7 @@ Per-tool caps (`read_file`'s line limit, `grep`'s 50-result ceiling, `bash`'s 50
 
 Pedagogy: per-tool caps are a *contract* with tool authors; the harness cap is an *invariant*. Contracts get forgotten; invariants don't. Two layers, so one forgotten ceiling doesn't blow the ctx window.
 
-See: `agent.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
+See: `agent/tokens.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
 
 ## 21. Interrupts and input history — cheap REPL ergonomics
 
@@ -332,7 +332,7 @@ Two small changes, one theme: a REPL that doesn't punish the user for bad habits
 
 **Ctrl+C while the model is streaming.** Without handling, `KeyboardInterrupt` propagates out of the `for chunk in ollama.chat(...)` generator, skips the `history.append` calls at the bottom of `run_agent`, and crashes the REPL entirely. Two places catch it:
 
-1. `agent.py:run_agent` wraps the streaming loop in `try/except KeyboardInterrupt`, stops the spinner, prints a closing newline to salvage the half-streamed line, and re-raises. It does *not* attempt to save partial content to `history` — the invariant is "history only contains complete turns." An aborted turn leaves no trace, which means the next turn doesn't see a truncated assistant reply that the model would then try to "continue."
+1. `agent/loop.py:run_agent` wraps the streaming loop in `try/except KeyboardInterrupt`, stops the spinner, prints a closing newline to salvage the half-streamed line, and re-raises. It does *not* attempt to save partial content to `history` — the invariant is "history only contains complete turns." An aborted turn leaves no trace, which means the next turn doesn't see a truncated assistant reply that the model would then try to "continue."
 2. `main.py` catches `KeyboardInterrupt` around the whole `run_agent` + trim/summarize block and returns to the prompt with `↳ aborted — history unchanged`. The same handler at the input call exits the program on Ctrl+C/Ctrl+D at an empty prompt, since readline already gives you in-line editing cancellation before the exception fires.
 
 The pedagogy: **side effects belong at commit points, not mid-stream.** `run_agent` mutates `history` only after a clean completion. That single discipline is what makes interrupts free — no rollback logic, no "undo the partial append," just a skipped commit.
@@ -341,7 +341,7 @@ The pedagogy: **side effects belong at commit points, not mid-stream.** `run_age
 
 The surprise: the *import* is the feature. Python's `input()` silently upgrades its behavior if `readline` is importable. No API calls needed to get arrow keys working — just the side-effect of importing. Classic Python.
 
-See: `agent.py:run_agent` (try/except block), `main.py:_load_input_history`
+See: `agent/loop.py:run_agent` (try/except block), `main.py:_load_input_history`
 
 ## 22. Control plane vs data plane — slash commands
 
@@ -388,7 +388,7 @@ The trade-off written into the design: **markdown is a block-level format, strea
 
 Why not render ONLY at the end? Because token-by-token arrival is the thing that makes an LLM feel alive. Users tolerate a little visual jitter in exchange for knowing the model is still thinking. Claude Code does the same thing.
 
-See: `agent.py:run_agent` (Live/Markdown block)
+See: `agent/loop.py:run_agent` (Live/Markdown block)
 
 ## 25. Parallel tool execution — serial gate, parallel body
 
@@ -416,7 +416,7 @@ Three design choices worth naming:
 
 Speedup is real: three 300ms sleeps serial = 0.9s, parallel = 0.3s (verified).
 
-See: `agent.py:_run_tools_parallel`
+See: `agent/loop.py:_run_tools_parallel`
 
 ## 26. Session persistence + project context (CLAUDE.md)
 
@@ -424,7 +424,7 @@ Two small persistence features in the same section because they're two sides of 
 
 **Session history** (`~/.mia_session.json`): every conversation turn that completes cleanly gets written back via `atexit`. On startup, `main.py` loads it into `state["history"]` and prints `↳ resumed session: N turn(s) restored`. `/clear` also wipes the file — otherwise "clear history" would be a lie that reappeared on next launch. Writes are atomic via `tmp + os.replace` so a crash mid-write doesn't leave a truncated JSON file that the next startup can't parse.
 
-**`CLAUDE.md` injection**: if the cwd contains a `CLAUDE.md`, `agent.py:_build_system_prompt` appends its contents to the system prompt every turn. Re-read each turn so edits take effect without restarting the REPL — a single `Path.read_text()` against a ~5KB file is free compared to an LLM call.
+**`CLAUDE.md` injection**: if the cwd contains a `CLAUDE.md`, `agent/system_prompt.py:build_system_prompt` appends its contents to the system prompt every turn. Re-read each turn so edits take effect without restarting the REPL — a single `Path.read_text()` against a ~5KB file is free compared to an LLM call.
 
 The subtle design question: *when* to read CLAUDE.md. Options:
 
@@ -434,7 +434,7 @@ The subtle design question: *when* to read CLAUDE.md. Options:
 
 And the subtle correctness question: should the saved session include *tool* messages too? No — we only save `history`, which (by `run_agent`'s discipline, see §21) contains only completed user/assistant turns. Tool round-trips are intermediate work, not conversation, and restoring half a tool chain into a new session would confuse the model.
 
-See: `main.py:_load_session`, `main.py:_save_session`, `agent.py:_build_system_prompt`
+See: `main.py:_load_session`, `main.py:_save_session`, `agent/system_prompt.py:build_system_prompt`
 
 ## 27. Plan mode — cheap safety via prompt + tool gate
 
@@ -449,13 +449,13 @@ Claude Code does this with a dedicated `ExitPlanMode` tool that's the *only* cal
 
 Surfaced in `/context` and the `harness_info` tool so the model can detect its own mode when asked ("am I in plan mode?").
 
-See: `agent.py:_build_system_prompt` (plan block), `agent.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
+See: `agent/system_prompt.py:build_system_prompt` (plan block), `agent/loop.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
 
 ## 28. Env injection — zero-tool-call context
 
 `/context` and `harness_info` let the *user* and *model* ask for harness state. But the model doesn't know to ask until it needs to — by which time the first response is already generic ("I'll use rich for better formatting" when rich is already everywhere).
 
-Fix: inject a compact `<env>` block into the system prompt every turn. `agent.py:_env_block` returns:
+Fix: inject a compact `<env>` block into the system prompt every turn. `agent/system_prompt.py:_env_block` returns:
 
 ```
 <env>
@@ -472,7 +472,7 @@ The design trade is **cost vs. latency**. Always-fresh env costs ~100 tokens eve
 
 A subtle correctness choice: when `git` fails (not a repo, command missing, timeout), `_git()` returns `None` and `_env_block` prints `git: (not a repository)` rather than crashing or silently omitting the field. The model prefers an explicit "no" to a missing field, because a missing field reads as "unknown" — and the model will then waste a tool call verifying.
 
-See: `agent.py:_env_block`, `agent.py:_git`
+See: `agent/system_prompt.py:_env_block`, `agent/system_prompt.py:_git`
 
 ## 29. Plan mode revisited — read/write split
 
@@ -498,7 +498,7 @@ The principle: **planning is an investigation phase, not a silence phase**. A pl
 
 Allow-list over deny-list because new tools default to blocked. A future `delete_file` added to the schema is automatically gated without needing to update `plan_mode` logic.
 
-See: `agent.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
+See: `agent/__init__.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
 
 ## 30. Multi-provider abstraction — two protocol families, one contract
 
@@ -528,7 +528,7 @@ The two adapters diverge on three axes, and those divergences are exactly what t
 
 The pedagogy is worth naming: **an abstraction isn't proven by wrapping one thing; it's proven by the seams exposed when you wrap the second**. Building just the Ollama adapter looks clean because there's nothing to translate. The OpenAI adapter is where you find out whether the protocol you designed actually holds — and the two messy parts (delta accumulation, tool_call_id synthesis) are not incidental complexity, they're the protocol tax every real multi-provider harness pays.
 
-See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent.py:_provider`
+See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent/loop.py:run_agent` (provider lookup)
 
 ## 31. Display layer — callbacks, not prints
 
@@ -551,7 +551,7 @@ Four design choices worth naming:
 
 A related streaming note: **TTFT and generation time are distinct.** `tok_per_s = completion_tokens / (elapsed − ttft_ms/1000)`. Dividing by total elapsed under-reports rate on long prompts, because prompt-eval time (everything before the first token) leaks into the denominator. Separating the two matches what the user actually perceives: "how long until I see text" vs. "how fast is it coming out now."
 
-See: `agent.py:_run_tools_parallel` (callbacks + args threading), `display.py` (renderers), `main.py:on_tool_start` / `on_tool_end` / `_build_prompt`
+See: `agent/loop.py:_run_tools_parallel` (callbacks + args threading), `display.py` (renderers), `main.py:on_tool_start` / `on_tool_end` / `_build_prompt`
 
 ## 32. Raschka's 6 components as a harness audit
 
@@ -583,7 +583,7 @@ See: https://magazine.sebastianraschka.com/p/components-of-a-coding-agent
 
 `/compact` fills the other half: **user-initiated** compaction, regardless of pressure. Before a big operation ("read five files and refactor"), the user can reset the transcript first, so the interesting work starts from a small prompt instead of inheriting the previous session's ceremony.
 
-Shape (`agent.py:compact_history` + `main.py:cmd_compact`):
+Shape (`agent/context.py:compact_history` + `main.py:cmd_compact`):
 
 1. Keep the last 2 user/assistant pairs — those carry the current intent.
 2. Summarize everything before that through the same `summarize_dropped` path used by auto-trim.
@@ -599,7 +599,7 @@ Three design choices worth naming:
 
 Claude Code's `/compact` does something richer: it can take a target instruction ("focus on the auth refactor") that biases the summary. Mia's version is parameterless. Easy upgrade later: pass the user's arg string into `summarize_dropped` as an extra system turn.
 
-See: `agent.py:compact_history`, `main.py:cmd_compact`
+See: `agent/context.py:compact_history`, `main.py:cmd_compact`
 
 ## 34. Rewind — snapshot-based undo
 
@@ -641,7 +641,7 @@ Three design choices:
 
 The pedagogy is the part worth keeping: **context management isn't a single mechanism; it's a layered one.** Per-tool caps handle "one bad tool call." `truncate_tool_result` handles "the tool author forgot a cap." `trim_history` handles "the conversation got long." `microcompact` handles "the *single turn* got long." Each layer catches a different failure, and you notice you need the next layer only when the previous one starts to leak.
 
-See: `agent.py:microcompact`, `agent.py:run_agent` (top-of-loop call), `config.py` constants nearby
+See: `agent/context.py:microcompact`, `agent/loop.py:run_agent` (top-of-loop call), `config.py` constants nearby
 
 ## 36. Narrow named tools > generic shell (for small models)
 
@@ -724,7 +724,7 @@ The broader lesson is the split itself. Every harness eventually hits this quest
 
 Concept-wise this is the same pattern as §22 (control plane vs data plane): there's a layer that mutates without involving the model, and the model just reads current values each turn. Slash commands edit it, tools read it. The model is always downstream.
 
-See: `providers/__init__.py` (build_provider + active-provider registry), `agent.py:_build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
+See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
 
 ---
 
