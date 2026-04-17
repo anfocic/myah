@@ -1,0 +1,34 @@
+version: 2
+
+# Dependabot opens PRs when deps have newer versions available. Weekly
+# cadence keeps the noise down; security alerts still fire immediately
+# regardless of schedule. Grouped ecosystems so a round of minor bumps
+# is one PR review instead of five.
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per weekly run for the dev toolchain — these bump
+      # together in practice (ruff/mypy/pytest releases are frequent).
+      dev-toolchain:
+        dependency-type: "development"
+      # Runtime deps (rich, httpx, ollama) batched too. Bumps are rarer
+      # but the batching prevents 3 sequential PRs on a release week.
+      runtime:
+        dependency-type: "production"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci"

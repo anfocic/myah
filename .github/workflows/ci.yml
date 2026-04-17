@@ -38,8 +38,23 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      - name: Tests (pytest)
-        # Mia's tests don't require a live Ollama daemon — they use scripted
-        # state and stub callables. If a future integration test does need a
-        # live model, gate it behind a marker and skip here.
-        run: pytest tests/ -q
+      - name: Type-check (mypy)
+        # Runs with pragmatic defaults (see pyproject.toml [tool.mypy]).
+        # Catches real bugs without forcing every test helper to carry
+        # annotations. Tighten `check_untyped_defs` later.
+        run: mypy .
+
+      - name: Tests (pytest with coverage)
+        # Coverage gate set in pyproject at fail_under=80. Mia's tests
+        # don't require a live Ollama daemon — they use scripted state
+        # and stub callables (FakeProvider in test_integration).
+        run: pytest tests/ --cov --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        # Only upload once per matrix run — the 3.12 job is authoritative.
+        # Other Python versions still run the gate locally via pytest-cov.
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false  # Codecov outages shouldn't break CI

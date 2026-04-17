@@ -10,6 +10,8 @@ Adding a new tool is three edits in this file: import the function, add a
 schema entry, add an `execute_tool` branch. CONCEPTS §36 argues for
 narrow named tools over generic shell (for small models), which is why
 `git_checkout` exists even though `bash` could do the same job."""
+from typing import Any
+
 from repl.state import State
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
@@ -18,7 +20,11 @@ from tools.harness import harness_info
 from tools.search import glob, grep
 from tools.utils import get_current_time
 
-tools = [
+# Tool schemas are nested dicts (OpenAI function-calling format). The
+# explicit `list[dict[str, Any]]` annotation keeps mypy from inferring a
+# `Collection[str]` value type from the first entry, which blocks the
+# nested indexing in the TOOL_NAMES comprehension below.
+tools: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
