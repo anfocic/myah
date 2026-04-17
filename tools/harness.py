@@ -1,6 +1,7 @@
 import os
 import subprocess
 from datetime import date
+from typing import Any, Mapping
 
 from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
 
@@ -17,7 +18,9 @@ def _git_branch() -> str:
         return "(not a git repo)"
 
 
-def harness_snapshot(state: dict, tool_names: list[str]) -> dict:
+# Read-only shape — accepts both a plain dict and main.py's State TypedDict.
+# Declaring the full State shape here would pull a circular import from main.
+def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
     """Single source of truth for fields both /context (rich) and the
     harness_info tool (plaintext) render."""
     ctx_used = state["ctx_used"]
@@ -36,7 +39,7 @@ def harness_snapshot(state: dict, tool_names: list[str]) -> dict:
     }
 
 
-def harness_info(state: dict, tool_names: list[str]) -> str:
+def harness_info(state: Mapping[str, Any], tool_names: list[str]) -> str:
     # ctx_used is the previous turn's settled value — there is no "current
     # turn" count because the model is calling this from inside one.
     s = harness_snapshot(state, tool_names)
