@@ -7,7 +7,7 @@ model proposes; the human allows.
 """
 import json
 
-SENSITIVE_TOOLS = {"write_file", "edit_file", "bash"}
+SENSITIVE_TOOLS = {"write_file", "edit_file", "bash", "git_checkout"}
 _session_allowed: set[str] = set()
 
 

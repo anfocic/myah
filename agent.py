@@ -117,6 +117,75 @@ def trim_history(
     return history, dropped
 
 
+COMPACT_KEEP_LAST = 2  # turns retained after manual /compact — one turn
+                       # of continuity + the current user message's runway
+
+
+def compact_history(
+    history: list, keep_last: int = COMPACT_KEEP_LAST,
+) -> tuple[list, list]:
+    """Manual compact: keep the last `keep_last` user/assistant pairs, drop
+    the rest. Caller is expected to summarize the dropped turns and re-insert
+    the summary. Distinct from `trim_history` — that's reactive (fires on
+    pressure); this is proactive (fires when the user says so)."""
+    keep_msgs = keep_last * 2
+    if len(history) <= keep_msgs:
+        return history, []
+    dropped = list(history[:-keep_msgs]) if keep_msgs else list(history)
+    new_history = list(history[-keep_msgs:]) if keep_msgs else []
+    return new_history, dropped
+
+
+def apply_summary(history: list, dropped: list) -> list:
+    """Summarize `dropped` and prepend the summary as a system note to
+    `history`. If summarization fails or returns empty, `history` is
+    returned unchanged so the caller can decide how to announce the outcome.
+    Used by both manual /compact and auto-trim — one canonical shape for
+    post-compaction history."""
+    summary = summarize_dropped(dropped)
+    if not summary:
+        return history
+    return [
+        {
+            "role": "system",
+            "content": f"Summary of earlier conversation: {summary}",
+        },
+        *history,
+    ]
+
+
+MICROCOMPACT_KEEP_RECENT = 3
+MICROCOMPACT_CTX_THRESHOLD = 0.6
+ELIDED_PREFIX = "[tool result elided"
+
+
+def microcompact(messages: list, keep_recent: int = MICROCOMPACT_KEEP_RECENT) -> int:
+    """Elide old tool-result bodies in the live `messages` list. Mutates
+    in-place; returns the number of messages rewritten. Tool messages stay
+    in the array (the assistant's tool_calls still reference them), only
+    their `content` gets replaced with a tiny stub.
+
+    Intra-turn counterpart to `trim_history`: history-level trim can't reach
+    tool results because history only holds user/assistant pairs (§3). A
+    turn that does 10 read_files accumulates 10 fat tool messages that only
+    microcompact can shrink."""
+    tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_indices) <= keep_recent:
+        return 0
+    to_elide = tool_indices[:-keep_recent]
+    n = 0
+    for i in to_elide:
+        original = messages[i].get("content") or ""
+        if original.startswith(ELIDED_PREFIX):
+            continue  # already elided — don't re-stamp
+        messages[i] = {
+            "role": "tool",
+            "content": f"{ELIDED_PREFIX} — {len(original)} chars]",
+        }
+        n += 1
+    return n
+
+
 def summarize_dropped(dropped: list) -> str:
     """Compress dropped turns into a terse note via the active provider."""
     if not dropped:
@@ -191,8 +260,10 @@ You are running on the {MODEL_NAME} model {served}.
 Answer truthfully about what model and provider you are based on the line above.
 
 Rules:
-- Always use tools when the task requires it
-- After using a tool, always respond with a short confirmation message
+- CRITICAL: You cannot perform actions by describing them. The only way to change state (checkout a branch, edit a file, run a command, read a file) is to call the relevant tool. Writing "Switching to main now" or "Running the tests..." without calling `bash` is a LIE — the state did not change.
+- CRITICAL: Never fabricate tool output. If you have not just called a tool, you do not know what it would have printed. Do not invent "HEAD is now at abc123...", "tests passed", file contents, or any other imagined result.
+- Always use tools when the task requires it. Anything involving git, the filesystem, shell commands, or reading/editing files requires a tool call.
+- After using a tool, respond with a short confirmation message grounded in the actual tool output.
 - Never return an empty response
 - For tasks needing multiple steps, do them one at a time
 - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path"""
@@ -253,6 +324,20 @@ def run_agent(
     ctx_used = estimate_tokens(messages)
 
     while True:
+        # Intra-turn context relief. Fires when a tool-heavy turn has racked
+        # up enough results to push ctx past the threshold. Does nothing on
+        # iteration 1 (no tool messages yet) or when the count is small.
+        if ctx_used > MICROCOMPACT_CTX_THRESHOLD * NUM_CTX:
+            n_elided = microcompact(messages)
+            if n_elided:
+                if console:
+                    if status:
+                        status.stop()  # else spinner redraws over our line
+                    console.print(
+                        f"[dim yellow]↳ microcompact: elided "
+                        f"{n_elided} old tool result(s)[/dim yellow]"
+                    )
+                ctx_used = estimate_tokens(messages)
         if debug and console:
             _debug_dump_messages(console, messages)
         if status:
