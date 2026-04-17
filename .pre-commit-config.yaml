@@ -1,0 +1,27 @@
+# Pre-commit hooks that fire on `git commit`, before the commit is
+# created. Mirrors CI's lint step so broken lint never even leaves the
+# laptop. Run `pre-commit install` once after cloning.
+#
+# Deliberately NOT running mypy or pytest here — those are slow enough
+# that they'd push people to `git commit --no-verify`. CI catches them.
+# Hooks stay fast so the "abort, fix, re-commit" cycle is friction-free.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

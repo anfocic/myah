@@ -1,5 +1,10 @@
 # Mia — a hand-rolled agent harness
 
+[![CI](https://github.com/anfocic/mia/actions/workflows/ci.yml/badge.svg)](https://github.com/anfocic/mia/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/anfocic/mia/branch/main/graph/badge.svg)](https://codecov.io/gh/anfocic/mia)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > A minimal Claude-Code-style agent loop, built for learning how agent harnesses work under the hood.
 
 Mia is a ~2000-line Python REPL that runs a local LLM (Ollama) or any OpenAI-compatible HTTP endpoint, lets it call tools (read/write files, grep, glob, bash, git), and wraps the whole thing in the ergonomics you'd expect: slash commands, streaming markdown, permission prompts, session persistence, context management.

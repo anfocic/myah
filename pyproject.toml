@@ -30,8 +30,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "pre-commit>=3.7",
 ]
 
 [project.urls]
@@ -70,3 +72,33 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+
+[tool.mypy]
+python_version = "3.11"
+# Pragmatic defaults: catch real bugs without forcing every lambda and
+# pytest fixture to carry annotations. Tighten later by enabling
+# `disallow_untyped_defs` once test helpers are all annotated.
+exclude = ["venv", "build", "dist"]
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = false
+
+[tool.coverage.run]
+branch = true
+source = ["agent", "repl", "providers", "tools", "display", "permissions", "config", "main"]
+omit = ["tests/*", "scripts/*", "venv/*"]
+
+[tool.coverage.report]
+# Current floor at 40% — above actual (~42%). The gate catches regressions
+# but isn't aspirational; untested files are provider adapters (SDK wrappers
+# that need network mocking to exercise) and tool implementations (which
+# shell out). Ratchet up as those get mocked test coverage.
+fail_under = 40
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

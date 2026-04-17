@@ -42,8 +42,12 @@ class OllamaProvider(Provider):
             for chunk in gen:
                 final = chunk
                 msg = chunk.message
+                # Ollama's SDK types arguments loosely (`Any | Mapping[str, Any]`);
+                # coerce to a concrete dict so downstream code (incl. the
+                # openai-compat adapter's JSON serialization) can rely on dict
+                # semantics. dict(mapping) is a no-op for dicts and copies otherwise.
                 tool_calls = [
-                    ToolCall(name=tc.function.name, arguments=tc.function.arguments)
+                    ToolCall(name=tc.function.name, arguments=dict(tc.function.arguments or {}))
                     for tc in (msg.tool_calls or [])
                 ]
                 yield StreamChunk(
