@@ -3,7 +3,8 @@ import subprocess
 from datetime import date
 from typing import Any, Mapping
 
-from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
+from config import NUM_CTX
+from providers import get_active_provider
 
 
 def _git_branch() -> str:
@@ -22,11 +23,13 @@ def _git_branch() -> str:
 # Declaring the full State shape here would pull a circular import from main.
 def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
     """Single source of truth for fields both /context (rich) and the
-    harness_info tool (plaintext) render."""
+    harness_info tool (plaintext) render. Reads model + provider from the
+    live adapter so /model swaps show up immediately."""
     ctx_used = state["ctx_used"]
+    provider = get_active_provider()
     return {
-        "model": MODEL_NAME,
-        "provider": MODEL_PROVIDER,
+        "model": provider.model,
+        "provider": provider.name,
         "num_ctx": NUM_CTX,
         "ctx_used": ctx_used,
         "ctx_pct": (ctx_used / NUM_CTX) if NUM_CTX else 0.0,
