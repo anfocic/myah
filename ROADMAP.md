@@ -10,13 +10,13 @@ Each item is a self-contained learning milestone. Pick one, ship a PR, update `C
 
 These are the differences you notice in the first 5 minutes of using Claude Code vs Mia.
 
-| Feature | Why it matters | Effort |
-|---|---|---|
-| Real tool suite (`Edit`, `Grep`, `Glob`, `Bash`) | `write_file` nuking whole files is the biggest toy-tell. Diff-style `Edit` + targeted `Grep` change what the model can actually do on real codebases | Medium — each tool is small, collectively large |
-| Tool permissioning | Ask before destructive writes / bash commands. Teaches the trust model — Claude Code's whole UX revolves around this | Small |
-| Parallel tool execution | When the model emits multiple `tool_calls`, run them concurrently via `asyncio` or threads. Teaches harness concurrency | Small-medium |
-| Graceful Ctrl+C | Abort mid-stream without crashing the REPL or corrupting `history` | Small |
-| Tool result truncation | `read_file` on a 5MB log currently blasts the ctx window. Needs a max-bytes cap + `...truncated` marker | Small |
+| Feature | Why it matters | Effort | Status |
+|---|---|---|---|
+| Real tool suite (`Edit`, `Grep`, `Glob`, `Bash`) | `write_file` nuking whole files is the biggest toy-tell. Diff-style `Edit` + targeted `Grep` change what the model can actually do on real codebases | Medium — each tool is small, collectively large | `Edit` + `Grep` shipped; `Glob` + `Bash` still open |
+| Tool permissioning | Ask before destructive writes / bash commands. Teaches the trust model — Claude Code's whole UX revolves around this | Small | Shipped |
+| Parallel tool execution | When the model emits multiple `tool_calls`, run them concurrently via `asyncio` or threads. Teaches harness concurrency | Small-medium | |
+| Graceful Ctrl+C | Abort mid-stream without crashing the REPL or corrupting `history` | Small | |
+| Tool result truncation | `read_file` on a 5MB log currently blasts the ctx window. Needs a max-bytes cap + `...truncated` marker | Small | |
 
 **Suggested first session:** `Edit` + `Grep` + tool permissioning, bundled. Those three together move Mia from "chatbot with two tools" to "actually useful coding assistant" and teach the safety layer in the same PR.
 

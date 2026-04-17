@@ -139,6 +139,53 @@ The model sounded confident and structurally coherent, but the code was wrong in
 
 Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advice about the harness itself.
 
+## 14. Surgical editing vs full-file writes
+
+`write_file` overwrites the entire file. That's fine for new files; catastrophic for modifying existing code. One wrong token from the model and 500 lines turn into 30.
+
+`edit_file(path, old_string, new_string, replace_all=False)` solves this by forcing the model to produce an `old_string` that *uniquely* identifies the target. If the string appears zero times → reject. If it appears more than once without `replace_all` → reject as ambiguous. Otherwise replace.
+
+Why this works:
+- The uniqueness constraint forces the model to include enough surrounding context to disambiguate, which is the same context a human would scan to confirm the edit location.
+- Failure modes become loud: "old_string appears 3 times, be more specific" is a recoverable error the model can retry on. A full-file-overwrite failure is silent data loss.
+- Tool result size stays tiny regardless of file size — only the diff-like delta travels back through the context window.
+
+This is why Claude Code's `Edit` tool looks the way it does; we copied the shape deliberately.
+
+See: `tools/files.py:edit_file`
+
+## 15. Regex search as a tool
+
+`grep(pattern, path, glob, output_mode)` mirrors ripgrep's core shape but in stdlib `re`. Two output modes:
+
+- `"files_with_matches"` (default) — just the list of files containing a hit. Cheap to read.
+- `"content"` — `path:line:text` per match, like `grep -n`. Richer, but hungrier on the ctx window.
+
+Defaulting to files-only is a deliberate context-budget choice: the model can follow up with `read_file` if it wants the details. Dumping every line of every match by default would blow NUM_CTX on any non-trivial search.
+
+Other sanity caps: skip files > 1 MB, skip binaries (anything that fails UTF-8 decode), skip dotdirs / `venv` / `__pycache__` / `node_modules` / `logs`. Hard cap at 50 results with a `... (truncated)` marker. These exist not for correctness but for **context-window discipline** — a single unbounded tool result can destroy a turn.
+
+See: `tools/search.py:grep`
+
+## 16. Tool permissioning / the trust model
+
+The model is a *proposer*, not an executor. For destructive tools (`write_file`, `edit_file`), the harness pauses and asks the human to approve the specific call before it runs.
+
+UX:
+- Sensitive tools listed in `SENSITIVE_TOOLS`. Non-sensitive tools (`read_file`, `grep`, `get_current_time`) never prompt.
+- Prompt shows the tool name and the actual arguments — so the user sees exactly what the model wants to do, not a generic "allow tool?" dialog.
+- Three options: `[y]es` (allow once), `[n]o` (deny, and the model is told it was denied), `[a]lways` (allow this tool for the rest of the process).
+
+Two pedagogical points worth noticing:
+
+1. **Denial is a tool result, not an exception.** When the user says no, the harness appends `{"role": "tool", "content": "User denied this tool call."}` so the next model turn can adapt gracefully ("understood, I won't do that"). If denial raised or hung, the loop would desync and the assistant would produce a confused follow-up. This is the same reason errors from tools are returned as tool messages instead of thrown.
+
+2. **The spinner must yield the terminal.** The `rich.Status` spinner redraws in a background thread; if you call `console.input()` while it's running, the spinner scribbles over the prompt. So `check_permission` does `status.stop()` → prompt → `status.start()`. Same pattern as streaming content in `run_agent`.
+
+Claude Code's whole UX is built on this trust model — every destructive action is a confirmation. It's worth seeing the minimal version to understand why that pattern exists.
+
+See: `permissions.py`, `agent.py:run_agent` (the callback wiring), `main.py` (closure per turn)
+
 ---
 
 ## To cover next
@@ -149,3 +196,4 @@ Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advic
 - [ ] Parallel tool calls (model returns 2+ calls in one turn)
 - [ ] Persisting history across sessions
 - [ ] Cost/latency tracking per turn
+- [ ] Tool result truncation (read_file on a 5MB log)
