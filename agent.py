@@ -117,6 +117,7 @@ def run_agent(
     history: list = [],
     status=None,
     console=None,
+    permission_check=None,
 ):
     messages = (
         [
@@ -203,18 +204,23 @@ def run_agent(
             messages.append({"role": "assistant", "content": content})
             total = len(tool_calls)
             for i, tool_call in enumerate(tool_calls, start=1):
+                name = tool_call.function.name
+                args = tool_call.function.arguments
+                if permission_check and not permission_check(name, args):
+                    messages.append(
+                        {"role": "tool", "content": "User denied this tool call."}
+                    )
+                    continue
                 if status:
                     status.update(
                         status_line(
-                            f"Running {tool_call.function.name}",
+                            f"Running {name}",
                             ctx_used,
                             time.time() - start,
                             progress=(i, total),
                         )
                     )
-                result = execute_tool(
-                    tool_call.function.name, tool_call.function.arguments
-                )
+                result = execute_tool(name, args)
                 messages.append({"role": "tool", "content": str(result)})
         else:
             if not content:
