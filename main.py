@@ -25,11 +25,19 @@ tools = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Reads the contents of a file at the given path",
+            "description": "Read a file. Returns the contents with line numbers prepended (cat -n style) so you can reference specific lines. By default returns the first 1000 lines; use offset and limit to paginate longer files.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file path to read"}
+                    "path": {"type": "string", "description": "The file path to read"},
+                    "offset": {
+                        "type": "integer",
+                        "description": "1-indexed line to start from. Defaults to 1.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of lines to return. Defaults to 1000.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -122,7 +130,11 @@ def execute_tool(name, args):
         if name == "get_current_time":
             return get_current_time()
         elif name == "read_file":
-            return read_file(args["path"])
+            return read_file(
+                args["path"],
+                int(args.get("offset", 1)),
+                int(args["limit"]) if "limit" in args else None,
+            )
         elif name == "write_file":
             return write_file(args["path"], args["content"])
         elif name == "edit_file":

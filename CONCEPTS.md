@@ -188,6 +188,28 @@ See: `permissions.py`, `agent.py:run_agent` (the callback wiring), `main.py` (cl
 
 ---
 
+## 17. Line-numbered reads + the "what's on line N" failure mode
+
+A `read_file` that returns raw text looks fine in isolation and collapses the moment the user asks "what's on line 34?". Observed session:
+
+- User: *"what's in search.py line 34?"*
+- Model called `grep('(?m)^\\s*34\\s*', './search.py')` — treating `grep` as a line-number lookup tool. Wrong.
+- Next turn, model called `grep('^.*$', 'tools/search.py', output_mode='content')` — dumping the whole file through `grep` because *that* tool returns `path:lineno:text`. Model cherry-picked the `:34:` line from the grep result and presented it as "line 34 contents." Wrong but plausible-looking to the user.
+- Next turn, *"read lines 40-60"* → model invented `grep('^\\s*\\d{1,2}\\s+.*')` and reported nothing matched.
+
+Root cause: small models are bad at counting newlines in a raw text blob. When the tool they *do* have (`read_file`) can't answer line-indexed questions, they reach for the nearest tool that *has* line numbers in its output — even when that tool is wrong for the task.
+
+Fix: `read_file` now returns one line per output line, prefixed with `"{lineno:>6}\t"`, same format Claude Code uses. It also takes `offset` (1-indexed start line) and `limit` (default 1000) for pagination, and per-line truncation at 500 chars so one pathological log line can't blow the ctx window.
+
+Two broader lessons:
+
+1. **Tool output shape is part of the tool's contract.** Adding line numbers isn't a cosmetic choice; it enables a whole class of queries that are otherwise impossible. A tool is only as useful as the questions its output can answer.
+2. **Watch what the model reaches for.** When it calls the wrong tool for a task, that's signal about what it wished the right tool exposed. The grep-as-line-lookup hallucination directly told us `read_file` was missing line numbers.
+
+See: `tools/files.py:read_file`
+
+---
+
 ## To cover next
 
 - [ ] System prompt as configuration, not hardcode
@@ -196,4 +218,4 @@ See: `permissions.py`, `agent.py:run_agent` (the callback wiring), `main.py` (cl
 - [ ] Parallel tool calls (model returns 2+ calls in one turn)
 - [ ] Persisting history across sessions
 - [ ] Cost/latency tracking per turn
-- [ ] Tool result truncation (read_file on a 5MB log)
+- [x] Tool result truncation — partial (read_file line cap + per-line cap; write_file/grep still open)
