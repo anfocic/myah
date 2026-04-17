@@ -1,4 +1,7 @@
 # main.py
+import atexit
+import os
+import readline  # noqa: F401 — import enables arrow-key line editing + history in input()
 import time
 
 from rich.console import Console
@@ -12,6 +15,24 @@ from tools.search import glob, grep
 from tools.utils import get_current_time
 
 console = Console()
+
+HISTORY_FILE = os.path.expanduser("~/.mia_history")
+
+
+def _load_input_history() -> None:
+    try:
+        readline.read_history_file(HISTORY_FILE)
+    except FileNotFoundError:
+        pass
+    readline.set_history_length(1000)
+    atexit.register(_save_input_history)
+
+
+def _save_input_history() -> None:
+    try:
+        readline.write_history_file(HISTORY_FILE)
+    except OSError:
+        pass
 
 tools = [
     {
@@ -223,45 +244,54 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
 
 
 if __name__ == "__main__":
+    _load_input_history()
     console.print(
         "[bold]Agent ready.[/bold] Type [italic dim]exit[/italic dim] to quit.\n"
     )
     history = []
     while True:
-        user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
+        try:
+            user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Exiting.[/dim]")
+            break
         if user_input.strip().lower() == "exit":
             break
         start = time.time()
-        with console.status(
-            "[yellow]Thinking...[/yellow]", spinner="dots"
-        ) as status:
-            def perm_check(name, args):
-                return check_permission(console, status, name, args)
+        try:
+            with console.status(
+                "[yellow]Thinking...[/yellow]", spinner="dots"
+            ) as status:
+                def perm_check(name, args):
+                    return check_permission(console, status, name, args)
 
-            response, history, ctx_used = run_agent(
-                user_input, tools, execute_tool, history,
-                status=status, console=console,
-                permission_check=perm_check,
-            )
-            history, dropped = trim_history(history, ctx_used, NUM_CTX)
-            if dropped:
-                status.update(
-                    status_line(
-                        "Summarizing dropped turns...",
-                        ctx_used,
-                        time.time() - start,
-                    )
+                response, history, ctx_used = run_agent(
+                    user_input, tools, execute_tool, history,
+                    status=status, console=console,
+                    permission_check=perm_check,
                 )
-                status.start()  # agent may have stopped it while streaming
-                summary = summarize_dropped(dropped)
-                if summary:
-                    history.insert(
-                        0,
-                        {
-                            "role": "system",
-                            "content": f"Summary of earlier conversation: {summary}",
-                        },
+                history, dropped = trim_history(history, ctx_used, NUM_CTX)
+                if dropped:
+                    status.update(
+                        status_line(
+                            "Summarizing dropped turns...",
+                            ctx_used,
+                            time.time() - start,
+                        )
                     )
+                    status.start()  # agent may have stopped it while streaming
+                    summary = summarize_dropped(dropped)
+                    if summary:
+                        history.insert(
+                            0,
+                            {
+                                "role": "system",
+                                "content": f"Summary of earlier conversation: {summary}",
+                            },
+                        )
+        except KeyboardInterrupt:
+            console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
+            continue
 
         tag = ctx_tag(ctx_used, NUM_CTX)
         elapsed = time.time() - start
