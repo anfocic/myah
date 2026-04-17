@@ -7,11 +7,11 @@ import time
 from rich.console import Console
 
 from agent import status_line, run_agent, summarize_dropped, trim_history
-from config import MODEL_NAME, MODEL_PROVIDER, NUM_CTX
+from config import NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
-from tools.harness import harness_info
+from tools.harness import harness_info, harness_snapshot
 from tools.search import glob, grep
 from tools.utils import get_current_time
 
@@ -198,13 +198,13 @@ tools = [
     },
 ]
 
+TOOL_NAMES = [t["function"]["name"] for t in tools]
+
 
 def make_execute_tool(state: dict):
     """Factory so the harness_info tool can close over the live REPL state
-    (ctx_used, history). Passing state as a function arg every turn would work
-    but would also leak REPL internals into run_agent's signature; a closure
-    keeps agent.py unaware of the state dict."""
-    tool_names = [t["function"]["name"] for t in tools]
+    (ctx_used, history). Passing state through run_agent would leak REPL
+    internals into its signature; a closure keeps agent.py state-ignorant."""
 
     def execute_tool(name, args):
         # Args come from the model, which occasionally omits required keys.
@@ -244,13 +244,7 @@ def make_execute_tool(state: dict):
                     int(args.get("timeout", 30)),
                 )
             elif name == "harness_info":
-                return harness_info(
-                    state,
-                    model=MODEL_NAME,
-                    provider=MODEL_PROVIDER,
-                    num_ctx=NUM_CTX,
-                    tool_names=tool_names,
-                )
+                return harness_info(state, TOOL_NAMES)
             return "Tool not found"
         except KeyError as e:
             return f"Missing required argument: {e}"
@@ -290,15 +284,14 @@ def cmd_clear(state):
 
 
 def cmd_context(state):
-    ctx = state["ctx_used"]
-    turns = len(state["history"]) // 2
-    tag = ctx_tag(ctx, NUM_CTX)
+    s = harness_snapshot(state, TOOL_NAMES)
+    tag = ctx_tag(s["ctx_used"], s["num_ctx"])
     console.print(
-        f"[bold]model:[/bold] {MODEL_NAME} [dim]({MODEL_PROVIDER})[/dim]\n"
-        f"[bold]num_ctx:[/bold] {NUM_CTX}\n"
-        f"[bold]ctx used:[/bold] {ctx} {tag}\n"
-        f"[bold]history turns:[/bold] {turns}\n"
-        f"[bold]tools:[/bold] {', '.join(t['function']['name'] for t in tools)}"
+        f"[bold]model:[/bold] {s['model']} [dim]({s['provider']})[/dim]\n"
+        f"[bold]num_ctx:[/bold] {s['num_ctx']}\n"
+        f"[bold]ctx used:[/bold] {s['ctx_used']} {tag}\n"
+        f"[bold]history turns:[/bold] {s['history_turns']}\n"
+        f"[bold]tools:[/bold] {', '.join(s['tools'])}"
     )
 
 
