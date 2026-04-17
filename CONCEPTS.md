@@ -293,6 +293,24 @@ Two design choices worth naming:
 
 See: `main.py:SLASH_COMMANDS`, `main.py:handle_slash`
 
+## 23. Harness introspection — tool closes over state
+
+`/context` answers the user. `harness_info` answers the model. Same information, different audience.
+
+The tool returns `{model, provider, num_ctx, ctx_used, history_turns, cwd, git_branch, date, tools}` as a plain string. The model calls it when a prompt asks "what harness am I running in?" or — more interestingly — when it's mid-reasoning and wants to decide whether to summarize ("am I near the ctx ceiling?") or whether a tool it wants to use actually exists ("do I have `grep`?").
+
+The implementation choice worth noting is **`make_execute_tool(state)` instead of a global**. The tool needs live access to the REPL's `ctx_used` and `history`, both of which mutate every turn. Three ways to wire that:
+
+1. **Module-level globals** — `harness_info` reads `main.ctx_used`. Works, but now agent/tool separation is broken and testing the tool means importing `main`.
+2. **Pass state through `run_agent`** — `run_agent(..., state=state)`, then to `execute_tool`. Works, but leaks REPL state into `agent.py`'s signature; `run_agent` has no business knowing about `history` as a mutable state dict.
+3. **Factory closure** — `make_execute_tool(state)` returns a dispatcher that captures `state` in its closure. `agent.py` still sees `execute_tool(name, args)` as a plain callable.
+
+Chose (3). `agent.py` stays state-ignorant; `main.py` owns the state; the tool sees fresh values without polling. This is the same pattern Python decorators use — lexical capture as a substitute for passing dependencies through signatures they don't belong in.
+
+The caveat written into the output string: `ctx_used` is the **previous turn's settled value**, not "right now." There is no "right now" — the model is calling the tool from *inside* the current turn, and the harness doesn't know the final prompt token count until the response lands. Saying so in the output prevents the model from reasoning about stale data as if it were live.
+
+See: `tools/harness.py`, `main.py:make_execute_tool`
+
 ---
 
 ## To cover next
