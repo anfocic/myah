@@ -239,6 +239,9 @@ def run_agent(
     console=None,
     permission_check=None,
     plan_mode: bool = False,
+    on_tool_start=None,
+    on_tool_end=None,
+    debug: bool = False,
 ):
     messages = (
         [{"role": "system", "content": _build_system_prompt(plan_mode)}]
@@ -250,6 +253,8 @@ def run_agent(
     ctx_used = estimate_tokens(messages)
 
     while True:
+        if debug and console:
+            _debug_dump_messages(console, messages)
         if status:
             status.update(status_line("Thinking...", ctx_used, time.time() - start))
             status.start()  # idempotent; re-arms spinner after a streaming phase
@@ -306,7 +311,9 @@ def run_agent(
                         f"\n[red]Provider error ({_provider.name}):[/red] {e}"
                     )
                 # Same discipline as Ctrl+C: history untouched, return to REPL.
-                return "", history, ctx_used
+                return "", history, ctx_used, {
+                    "ttft_ms": None, "completion_tokens": None, "tok_per_s": None,
+                }
         finally:
             if live is not None:
                 live.stop()
@@ -345,6 +352,8 @@ def run_agent(
                 status=status,
                 ctx_used=ctx_used,
                 start=start,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
             )
             for content_str in results:
                 messages.append(
@@ -359,7 +368,40 @@ def run_agent(
                     )
             history.append({"role": "user", "content": user_input})
             history.append({"role": "assistant", "content": content})
-            return content, history, ctx_used
+            # Streaming rate: completion tokens divided by seconds spent
+            # generating (elapsed minus ttft). Only meaningful when both
+            # are known; otherwise None so main.py can skip rendering.
+            stream_s = None
+            if ttft_ms is not None:
+                stream_s = (time.time() - start) - (ttft_ms / 1000)
+            completion_tokens = (
+                final_usage.completion_tokens if final_usage else None
+            )
+            tok_per_s = None
+            if completion_tokens and stream_s and stream_s > 0:
+                tok_per_s = completion_tokens / stream_s
+            stats = {
+                "ttft_ms": ttft_ms,
+                "completion_tokens": completion_tokens,
+                "tok_per_s": tok_per_s,
+            }
+            return content, history, ctx_used, stats
+
+
+def _debug_dump_messages(console, messages: list) -> None:
+    """Print the full messages array being sent to the provider. Cheap to
+    render — rich will wrap long content. Toggled by /debug in main.py."""
+    console.print(
+        f"[dim]── debug: {len(messages)} messages → provider ──[/dim]"
+    )
+    for i, m in enumerate(messages):
+        role = m.get("role", "?")
+        content = m.get("content", "") or ""
+        preview = content if len(content) <= 400 else content[:397] + "..."
+        console.print(f"[dim]#{i} [{role}][/dim] {preview}")
+        if m.get("tool_calls"):
+            console.print(f"[dim]   tool_calls: {m['tool_calls']}[/dim]")
+    console.print("[dim]── end debug ──[/dim]")
 
 
 def _run_tools_parallel(
@@ -371,6 +413,8 @@ def _run_tools_parallel(
     status,
     ctx_used: int,
     start: float,
+    on_tool_start=None,
+    on_tool_end=None,
 ) -> list[str]:
     """Serial permission gate (user prompts can't be parallel) → parallel
     execution for approved calls → results returned in original tool_calls
@@ -379,7 +423,28 @@ def _run_tools_parallel(
     In plan_mode, read-only tools (grep/glob/read_file/etc.) still run so
     the model can ground its plan in the actual code. Mutating tools are
     short-circuited with a canned string; no permission prompt fires for
-    them since no work would happen."""
+    them since no work would happen.
+
+    on_tool_start/on_tool_end are optional display callbacks. start fires
+    in request order; end fires in completion order (parallel). end receives
+    args so the display layer can correlate (e.g. render a diff from the
+    same old_string/new_string it saw in start). ok=False means denied,
+    plan-blocked, or raised."""
+
+    def _notify_start(name, args):
+        if on_tool_start:
+            try:
+                on_tool_start(name, args)
+            except Exception:
+                pass  # display callback must never break the loop
+
+    def _notify_end(name, args, result, ok):
+        if on_tool_end:
+            try:
+                on_tool_end(name, args, result, ok)
+            except Exception:
+                pass
+
     n = len(tool_calls)
     results: list[str | None] = [None] * n
 
@@ -387,32 +452,41 @@ def _run_tools_parallel(
     for i, tc in enumerate(tool_calls):
         name = tc.name
         args = tc.arguments
+        _notify_start(name, args)
         if plan_mode and name not in READ_ONLY_TOOLS:
-            results[i] = (
+            msg = (
                 f"Plan mode: {name} is a mutating tool and was not executed. "
                 "Use read-only tools (glob, grep, read_file, harness_info) to "
                 "investigate, then describe the proposed changes."
             )
+            results[i] = msg
+            _notify_end(name, args, msg, False)
             continue
         if permission_check and not permission_check(name, args):
-            results[i] = "User denied this tool call."
+            msg = "User denied this tool call."
+            results[i] = msg
+            _notify_end(name, args, msg, False)
         else:
             approved.append((i, name, args))
 
     if approved:
         with ThreadPoolExecutor(max_workers=len(approved)) as ex:
             future_to_idx = {
-                ex.submit(execute_tool, name, args): i
+                ex.submit(execute_tool, name, args): (i, name, args)
                 for (i, name, args) in approved
             }
             done = 0
             for fut in as_completed(future_to_idx):
-                i = future_to_idx[fut]
+                i, name, args = future_to_idx[fut]
                 try:
-                    results[i] = str(fut.result())
+                    out = str(fut.result())
+                    results[i] = out
+                    _notify_end(name, args, out, True)
                 except Exception as e:
                     # Tool errors are data, not exceptions — let the model recover.
-                    results[i] = f"Tool raised: {type(e).__name__}: {e}"
+                    msg = f"Tool raised: {type(e).__name__}: {e}"
+                    results[i] = msg
+                    _notify_end(name, args, msg, False)
                 done += 1
                 if status:
                     status.update(
