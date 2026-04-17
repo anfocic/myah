@@ -1,5 +1,6 @@
 # main.py
 import atexit
+import json
 import os
 import readline  # noqa: F401 — import enables arrow-key line editing + history in input()
 import time
@@ -18,6 +19,7 @@ from tools.utils import get_current_time
 console = Console()
 
 HISTORY_FILE = os.path.expanduser("~/.mia_history")
+SESSION_FILE = os.path.expanduser("~/.mia_session.json")
 
 
 def _load_input_history() -> None:
@@ -33,6 +35,34 @@ def _save_input_history() -> None:
     try:
         readline.write_history_file(HISTORY_FILE)
     except OSError:
+        pass
+
+
+def _load_session(state: dict) -> None:
+    try:
+        with open(SESSION_FILE) as f:
+            loaded = json.load(f)
+        if isinstance(loaded, list):
+            state["history"] = loaded
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_session(state: dict) -> None:
+    # Guarded against partial writes by going through a temp file.
+    try:
+        tmp = SESSION_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state["history"], f)
+        os.replace(tmp, SESSION_FILE)
+    except OSError:
+        pass
+
+
+def _wipe_session() -> None:
+    try:
+        os.remove(SESSION_FILE)
+    except FileNotFoundError:
         pass
 
 tools = [
@@ -280,25 +310,38 @@ def cmd_help(state):
 def cmd_clear(state):
     state["history"].clear()
     state["ctx_used"] = 0
-    console.print("[dim]↳ history cleared[/dim]")
+    _wipe_session()
+    console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
 
 def cmd_context(state):
     s = harness_snapshot(state, TOOL_NAMES)
     tag = ctx_tag(s["ctx_used"], s["num_ctx"])
+    plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
     console.print(
         f"[bold]model:[/bold] {s['model']} [dim]({s['provider']})[/dim]\n"
         f"[bold]num_ctx:[/bold] {s['num_ctx']}\n"
         f"[bold]ctx used:[/bold] {s['ctx_used']} {tag}\n"
         f"[bold]history turns:[/bold] {s['history_turns']}\n"
+        f"[bold]plan mode:[/bold] {plan}\n"
         f"[bold]tools:[/bold] {', '.join(s['tools'])}"
+    )
+
+
+def cmd_plan(state):
+    state["plan_mode"] = not state.get("plan_mode", False)
+    status = "[yellow]ON[/yellow]" if state["plan_mode"] else "[dim]off[/dim]"
+    console.print(
+        f"[dim]↳ plan mode[/dim] {status} "
+        f"[dim]— in plan mode, tool calls are rejected; the model describes instead[/dim]"
     )
 
 
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
-    "/clear": (cmd_clear, "reset conversation history"),
+    "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
     "/context": (cmd_context, "show context window usage + harness info"),
+    "/plan": (cmd_plan, "toggle plan mode (describe, don't execute)"),
 }
 
 
@@ -326,7 +369,15 @@ if __name__ == "__main__":
     # state is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds the list, so we can't keep a
     # separate local `history` without drift.
-    state: dict = {"history": [], "ctx_used": 0}
+    state: dict = {"history": [], "ctx_used": 0, "plan_mode": False}
+    _load_session(state)
+    atexit.register(_save_session, state)
+    if state["history"]:
+        turns = len(state["history"]) // 2
+        console.print(
+            f"[dim]↳ resumed session: {turns} turn(s) restored "
+            f"(use /clear to start fresh)[/dim]\n"
+        )
     execute_tool = make_execute_tool(state)
     while True:
         try:
@@ -353,6 +404,7 @@ if __name__ == "__main__":
                     user_input, tools, execute_tool, state["history"],
                     status=status, console=console,
                     permission_check=perm_check,
+                    plan_mode=state["plan_mode"],
                 )
                 state["history"], dropped = trim_history(
                     state["history"], state["ctx_used"], NUM_CTX

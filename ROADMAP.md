@@ -14,7 +14,7 @@ These are the differences you notice in the first 5 minutes of using Claude Code
 |---|---|---|---|
 | Real tool suite (`Edit`, `Grep`, `Glob`, `Bash`) | `write_file` nuking whole files is the biggest toy-tell. Diff-style `Edit` + targeted `Grep` change what the model can actually do on real codebases | Medium — each tool is small, collectively large | Shipped |
 | Tool permissioning | Ask before destructive writes / bash commands. Teaches the trust model — Claude Code's whole UX revolves around this | Small | Shipped |
-| Parallel tool execution | When the model emits multiple `tool_calls`, run them concurrently via `asyncio` or threads. Teaches harness concurrency | Small-medium | |
+| Parallel tool execution | When the model emits multiple `tool_calls`, run them concurrently via `asyncio` or threads. Teaches harness concurrency | Small-medium | Shipped |
 | Graceful Ctrl+C | Abort mid-stream without crashing the REPL or corrupting `history` | Small | Shipped |
 | Tool result truncation | `read_file` on a 5MB log currently blasts the ctx window. Needs a max-bytes cap + `...truncated` marker | Small | Shipped |
 
@@ -27,7 +27,7 @@ Teaches how real harnesses are structured.
 | Feature | Why it matters | Effort | Status |
 |---|---|---|---|
 | Multi-provider abstraction | Claude Code runs on Anthropic; Mia only on Ollama. Abstracting teaches protocol design | Medium | |
-| Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small | |
+| Persistent history + `CLAUDE.md` loading | Resume across sessions; project-level memory file injected as system context | Small | Shipped |
 | Slash commands (`/clear`, `/context`, `/help`) | The control-plane vs. data-plane split — commands the harness handles vs. text the model sees | Small | Shipped |
 | `harness_info` tool | Model-side introspection: model name, ctx budget, cwd, git branch, date, tool list. Complement of `/context` on the data plane | Small | Shipped |
 | Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | |
@@ -41,9 +41,9 @@ Nice to have; smaller pedagogical payoff per unit of effort.
 |---|---|---|---|
 | Persistent input history (`~/.mia_history`, arrow keys) | Re-run previous prompts via readline, across sessions | Trivial | Shipped |
 | Env context injection | Auto-inject cwd, git branch, OS, date into the system prompt | Small | |
-| Plan mode | Non-executing mode where the model proposes before doing. Claude Code's `ExitPlanMode` tool | Small-medium | |
+| Plan mode | Non-executing mode where the model proposes before doing. Claude Code's `ExitPlanMode` tool | Small-medium | Shipped |
 | Streaming tool args | Watch `tool_calls` assemble token-by-token (Ollama supports this in newer versions) | Medium | |
-| Rendered markdown output | Code blocks, tables, headings via `rich.markdown.Markdown` | Small | |
+| Rendered markdown output | Code blocks, tables, headings via `rich.markdown.Markdown` | Small | Shipped |
 | MCP-style plugin tools | Dynamically load tools from external processes. Big arch lift | Large | |
 
 ---
