@@ -5,7 +5,7 @@ from pathlib import Path
 
 import ollama
 
-from config import MODEL_NAME, NUM_CTX, STREAM_DELAY_MS
+from config import MODEL_NAME, NUM_CTX, STREAM_DELAY_MS, TOOL_RESULT_MAX_BYTES
 
 LOG_FILE = Path("logs/agent.jsonl")
 
@@ -70,6 +70,21 @@ def estimate_tokens(messages: list) -> int:
     """Rough token count: ~1 token per 4 characters of message content."""
     total = sum(len(m.get("content") or "") for m in messages)
     return total // 4
+
+
+def truncate_tool_result(result: str, max_bytes: int = TOOL_RESULT_MAX_BYTES) -> str:
+    """Cap a tool result's size so one giant read_file can't blow the ctx
+    window. Keeps head + tail (the useful bits are usually at the edges)."""
+    if len(result) <= max_bytes:
+        return result
+    dropped = len(result) - max_bytes
+    head = max_bytes // 2
+    tail = max_bytes - head
+    return (
+        result[:head]
+        + f"\n\n...[truncated {dropped} chars]...\n\n"
+        + result[-tail:]
+    )
 
 
 def trim_history(
@@ -222,7 +237,9 @@ def run_agent(
                         )
                     )
                 result = execute_tool(name, args)
-                messages.append({"role": "tool", "content": str(result)})
+                messages.append(
+                    {"role": "tool", "content": truncate_tool_result(str(result))}
+                )
         else:
             if not content:
                 content = "Done."

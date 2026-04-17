@@ -249,6 +249,16 @@ Exit codes, stdout, and stderr are all surfaced separately: the model sees `[std
 
 See: `tools/bash.py`, `permissions.py:NEVER_TRUNCATE_KEYS`
 
+## 20. Generic tool-result cap (defence in depth)
+
+Per-tool caps (`read_file`'s line limit, `grep`'s 50-result ceiling, `bash`'s 50KB stream cap) all assumed each tool author would remember to bound its own output. Works until someone adds a tool and forgets — one `curl` wrapper returning a 5MB JSON blob lands straight in `messages` and the next `ollama.chat` silently drops half the prompt.
+
+`truncate_tool_result()` in `agent.py` is the harness-level safety net: applied in the tool-dispatch path in `run_agent`, *after* `execute_tool` returns but *before* the result is appended to `messages`. Default cap is `TOOL_RESULT_MAX_BYTES = 10_000` chars. Strategy is head-and-tail preservation (errors + summaries live at the edges; the middle of a huge dump is usually the least informative part), joined by a `...[truncated N chars]...` marker the model can see.
+
+Pedagogy: per-tool caps are a *contract* with tool authors; the harness cap is an *invariant*. Contracts get forgotten; invariants don't. Two layers, so one forgotten ceiling doesn't blow the ctx window.
+
+See: `agent.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
+
 ---
 
 ## To cover next
@@ -259,4 +269,4 @@ See: `tools/bash.py`, `permissions.py:NEVER_TRUNCATE_KEYS`
 - [ ] Parallel tool calls (model returns 2+ calls in one turn)
 - [ ] Persisting history across sessions
 - [ ] Cost/latency tracking per turn
-- [x] Tool result truncation — partial (read_file line cap + per-line cap; write_file/grep still open)
+- [x] Tool result truncation (per-tool caps + harness-level `truncate_tool_result`)
