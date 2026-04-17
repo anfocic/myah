@@ -132,7 +132,8 @@ def run_agent(
             - Always use tools when the task requires it
             - After using a tool, always respond with a short confirmation message
             - Never return an empty response
-            - For tasks needing multiple steps, do them one at a time""",
+            - For tasks needing multiple steps, do them one at a time
+            - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path""",
             }
         ]
         + history
