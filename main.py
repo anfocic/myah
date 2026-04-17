@@ -3,11 +3,13 @@ import atexit
 import json
 import os
 import readline  # noqa: F401 — import enables arrow-key line editing + history in input()
+import subprocess
 import time
 
 from rich.console import Console
 
 from agent import status_line, run_agent, summarize_dropped, trim_history
+from display import render_diff, render_file_preview
 from config import NUM_CTX
 from permissions import check_permission
 from tools.bash import bash as run_bash
@@ -282,6 +284,138 @@ def make_execute_tool(state: dict):
     return execute_tool
 
 
+# ── Tool-call display ────────────────────────────────────────────────────────
+# Fires between the assistant's streaming reply and the next "Thinking..."
+# spinner. Keeps tool activity visible so the user can follow the loop rather
+# than watching silent pauses. Display-only — the model sees the raw result.
+
+_SALIENT_ARG_KEYS = ("path", "command", "pattern", "query")
+
+
+def _args_preview(args: dict) -> str:
+    """One-line arg summary. Prefers the salient key per tool (path/command/
+    pattern); falls back to the first value so new tools render something."""
+    if not args:
+        return ""
+    for k in _SALIENT_ARG_KEYS:
+        if k in args:
+            v = str(args[k])
+            return v if len(v) <= 70 else v[:67] + "..."
+    first = next(iter(args.values()), "")
+    s = str(first)
+    return s if len(s) <= 70 else s[:67] + "..."
+
+
+def on_tool_start(name: str, args: dict) -> None:
+    preview = _args_preview(args)
+    if preview:
+        console.print(
+            f"[cyan]⏺[/cyan] [bold]{name}[/bold][dim]({preview})[/dim]"
+        )
+    else:
+        console.print(f"[cyan]⏺[/cyan] [bold]{name}[/bold]")
+
+
+def on_tool_end(name: str, args: dict, result: str, ok: bool) -> None:
+    if not ok:
+        if result.startswith("User denied"):
+            console.print("  [dim]↳[/dim] [red]denied[/red]")
+        elif result.startswith("Plan mode:"):
+            console.print("  [dim]↳[/dim] [yellow]blocked (plan mode)[/yellow]")
+        elif result.startswith("Tool raised:"):
+            first = result.split("\n", 1)[0]
+            console.print(f"  [dim]↳[/dim] [red]{first}[/red]")
+        else:
+            first = result.splitlines()[0] if result else "(empty)"
+            console.print(f"  [dim]↳ {first}[/dim]")
+        return
+    lines = result.splitlines()
+    n = len(lines)
+    if n <= 1:
+        line = result.strip() or "(empty)"
+        if len(line) > 80:
+            line = line[:77] + "..."
+        console.print(f"  [dim]↳ {line}[/dim]")
+    else:
+        first = next((l for l in lines if l.strip()), "")
+        if len(first) > 80:
+            first = first[:77] + "..."
+        console.print(f"  [dim]↳ {n} lines · {first}[/dim]")
+
+    # Rich per-tool renderers. Only fire when the tool ran successfully and
+    # the args we need are present — a malformed edit call shouldn't break
+    # display.
+    if name == "edit_file" and args.get("old_string") is not None:
+        render_diff(
+            console,
+            str(args.get("path", "")),
+            str(args.get("old_string", "")),
+            str(args.get("new_string", "")),
+        )
+    elif name == "read_file" and args.get("path"):
+        render_file_preview(console, str(args["path"]), result)
+
+
+# ── Prompt chrome ────────────────────────────────────────────────────────────
+# Branch + mode badge in the prompt prefix, hint line above it, rule between
+# turns. All cosmetic — the model sees none of this.
+
+
+def _current_branch() -> str | None:
+    """Best-effort current branch name. Returns None outside a repo or if
+    git is missing. Called once per prompt; cheap enough to skip caching."""
+    try:
+        out = subprocess.check_output(
+            ["git", "branch", "--show-current"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        ).strip()
+        return out or None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _build_prompt(state: dict) -> str:
+    """`You [branch · plan · debug] ›` — badges only rendered when the
+    condition applies so the prompt stays clean in the common case."""
+    parts = []
+    branch = _current_branch()
+    if branch:
+        parts.append(branch)
+    if state.get("plan_mode"):
+        parts.append("[yellow]plan[/yellow]")
+    if state.get("debug"):
+        parts.append("[magenta]debug[/magenta]")
+    badge = f" [dim]\\[{' · '.join(parts)}][/dim]" if parts else ""
+    return f"[bold magenta]You[/bold magenta]{badge} [dim]›[/dim] "
+
+
+def _print_hint() -> None:
+    console.print(
+        "[dim]/help · /plan · /retry · /debug · ctrl+c to interrupt[/dim]"
+    )
+
+
+# ── Tab completion for slash commands ───────────────────────────────────────
+# readline calls the completer repeatedly with increasing state indices until
+# it returns None. We match only when the buffer starts with "/" so normal
+# prose input stays untouched.
+
+
+def _install_slash_completer() -> None:
+    def completer(text: str, state: int):
+        buf = readline.get_line_buffer()
+        if not buf.startswith("/"):
+            return None
+        matches = [c for c in SLASH_COMMANDS if c.startswith(buf)]
+        return matches[state] if state < len(matches) else None
+
+    readline.set_completer(completer)
+    readline.set_completer_delims("")  # treat "/" as part of the word
+    readline.parse_and_bind("tab: complete")
+
+
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
     pct = ctx_used / ctx_total
     if pct < 0.5:
@@ -337,11 +471,36 @@ def cmd_plan(state):
     )
 
 
+def cmd_debug(state):
+    state["debug"] = not state.get("debug", False)
+    status = "[magenta]ON[/magenta]" if state["debug"] else "[dim]off[/dim]"
+    console.print(
+        f"[dim]↳ debug[/dim] {status} "
+        f"[dim]— when on, the full messages array is printed before each provider call[/dim]"
+    )
+
+
+def cmd_retry(state):
+    """Pop the last user/assistant pair from history and re-run the user
+    input. Useful when the model flubbed and we want a fresh sample without
+    retyping. No-op (with a note) if there's no prior turn."""
+    history = state["history"]
+    if len(history) < 2 or history[-2].get("role") != "user":
+        console.print("[dim]↳ no previous turn to retry[/dim]")
+        return
+    last_user = history[-2].get("content", "")
+    del history[-2:]
+    state["_retry_input"] = last_user
+    console.print(f"[dim]↳ retrying: {last_user[:80]}[/dim]")
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
     "/context": (cmd_context, "show context window usage + harness info"),
     "/plan": (cmd_plan, "toggle plan mode (describe, don't execute)"),
+    "/debug": (cmd_debug, "toggle debug (print messages array each turn)"),
+    "/retry": (cmd_retry, "re-run the last turn (pops + resubmits)"),
 }
 
 
@@ -361,6 +520,7 @@ def handle_slash(user_input: str, state: dict) -> bool:
 
 if __name__ == "__main__":
     _load_input_history()
+    _install_slash_completer()
     console.print(
         "[bold]Agent ready.[/bold] "
         "Type [italic dim]/help[/italic dim] for commands, "
@@ -369,7 +529,12 @@ if __name__ == "__main__":
     # state is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds the list, so we can't keep a
     # separate local `history` without drift.
-    state: dict = {"history": [], "ctx_used": 0, "plan_mode": False}
+    state: dict = {
+        "history": [],
+        "ctx_used": 0,
+        "plan_mode": False,
+        "debug": False,
+    }
     _load_session(state)
     atexit.register(_save_session, state)
     if state["history"]:
@@ -380,18 +545,23 @@ if __name__ == "__main__":
         )
     execute_tool = make_execute_tool(state)
     while True:
-        try:
-            user_input = console.input("[bold magenta]You[/bold magenta] [dim]›[/dim] ")
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Exiting.[/dim]")
-            break
-        if not user_input.strip():
-            continue
-        if user_input.strip().lower() == "exit":
-            break
-        if handle_slash(user_input, state):
-            console.print()
-            continue
+        # /retry stashes the prior user input here so we skip reading stdin
+        # and resubmit it directly. Cleared once consumed.
+        user_input = state.pop("_retry_input", None)
+        if user_input is None:
+            _print_hint()
+            try:
+                user_input = console.input(_build_prompt(state))
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Exiting.[/dim]")
+                break
+            if not user_input.strip():
+                continue
+            if user_input.strip().lower() == "exit":
+                break
+            if handle_slash(user_input, state):
+                console.print()
+                continue
         start = time.time()
         try:
             with console.status(
@@ -400,11 +570,14 @@ if __name__ == "__main__":
                 def perm_check(name, args):
                     return check_permission(console, status, name, args)
 
-                response, state["history"], state["ctx_used"] = run_agent(
+                response, state["history"], state["ctx_used"], stats = run_agent(
                     user_input, tools, execute_tool, state["history"],
                     status=status, console=console,
                     permission_check=perm_check,
                     plan_mode=state["plan_mode"],
+                    on_tool_start=on_tool_start,
+                    on_tool_end=on_tool_end,
+                    debug=state["debug"],
                 )
                 state["history"], dropped = trim_history(
                     state["history"], state["ctx_used"], NUM_CTX
@@ -433,8 +606,11 @@ if __name__ == "__main__":
 
         tag = ctx_tag(state["ctx_used"], NUM_CTX)
         elapsed = time.time() - start
-        console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]\n")
+        rate = stats.get("tok_per_s")
+        rate_s = f" · [dim]{rate:.0f} tok/s[/dim]" if rate else ""
+        console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]{rate_s}")
         if dropped:
             console.print(
-                f"[dim yellow]↳ trimmed {len(dropped) // 2} old turn(s), summarized into context[/dim yellow]\n"
+                f"[dim yellow]↳ trimmed {len(dropped) // 2} old turn(s), summarized into context[/dim yellow]"
             )
+        console.rule(style="dim")
