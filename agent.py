@@ -305,7 +305,7 @@ def run_agent(
     user_input: str,
     tools: list,
     execute_tool,
-    history: list = [],
+    history: list | None = None,
     status=None,
     console=None,
     permission_check=None,
@@ -314,6 +314,11 @@ def run_agent(
     on_tool_end=None,
     debug: bool = False,
 ):
+    # Sentinel + per-call init avoids the mutable-default-arg footgun: a
+    # literal [] default is shared across every call that omits history, so
+    # one call's turn leaks into the next caller's turn-1.
+    if history is None:
+        history = []
     messages = (
         [{"role": "system", "content": _build_system_prompt(plan_mode)}]
         + history
@@ -533,6 +538,13 @@ def _run_tools_parallel(
     n = len(tool_calls)
     results: list[str | None] = [None] * n
 
+    # Fail-closed default: if no caller-supplied check, only read-only tools
+    # run. Protects subagents/tests that plug into run_agent without wiring
+    # up the REPL's permission prompt — otherwise bash/edit/write would
+    # execute silently with no human in the loop.
+    if permission_check is None:
+        permission_check = lambda name, args: name in READ_ONLY_TOOLS
+
     approved: list[tuple[int, str, dict]] = []
     for i, tc in enumerate(tool_calls):
         name = tc.name
@@ -547,7 +559,7 @@ def _run_tools_parallel(
             results[i] = msg
             _notify_end(name, args, msg, False)
             continue
-        if permission_check and not permission_check(name, args):
+        if not permission_check(name, args):
             msg = "User denied this tool call."
             results[i] = msg
             _notify_end(name, args, msg, False)

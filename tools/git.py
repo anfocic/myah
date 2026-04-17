@@ -10,6 +10,12 @@ def git_checkout(branch: str) -> str:
     """Run `git checkout <branch>`. Reports the transition so the model can
     confirm the state change. Errors (unknown branch, dirty tree blocking
     checkout) come back as tool output for the model to recover from."""
+    # argv-safe against shell injection (no shell=True), but git itself still
+    # parses a leading "-" as a flag. Reject those before they become
+    # accidental `git checkout -f` / `--orphan` invocations.
+    if not branch or branch.startswith("-"):
+        return f"Refusing to check out suspicious branch name: {branch!r}"
+
     try:
         current = subprocess.check_output(
             ["git", "branch", "--show-current"],
