@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mia"
+version = "0.1.0"
+description = "A hand-rolled agent harness built to learn how Claude Code / Cursor work under the hood."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Andrej Focic" }]
+keywords = ["agent", "llm", "ollama", "tool-use", "repl"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "rich>=13.0",
+    "httpx>=0.27",
+    "ollama>=0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/anfocic/mia"
+Issues = "https://github.com/anfocic/mia/issues"
+
+[tool.setuptools]
+# Flat layout: agent.py / main.py / config.py are top-level modules, plus
+# the providers/ and tools/ packages. No src/ dir — this is a small
+# pedagogical harness, not a library.
+py-modules = ["agent", "main", "config", "display", "permissions"]
+packages = ["providers", "tools"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+]
+ignore = [
+    "E501",  # line too long (rich markup strings get long)
+    "E731",  # lambda assignments (used intentionally for fail-closed default)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
