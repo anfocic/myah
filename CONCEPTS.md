@@ -384,6 +384,55 @@ Surfaced in `/context` and the `harness_info` tool so the model can detect its o
 
 See: `agent.py:_build_system_prompt` (plan block), `agent.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
 
+## 28. Env injection — zero-tool-call context
+
+`/context` and `harness_info` let the *user* and *model* ask for harness state. But the model doesn't know to ask until it needs to — by which time the first response is already generic ("I'll use rich for better formatting" when rich is already everywhere).
+
+Fix: inject a compact `<env>` block into the system prompt every turn. `agent.py:_env_block` returns:
+
+```
+<env>
+cwd: /Users/fole/mia
+platform: darwin (arm64)
+date: 2026-04-17
+git: branch=feat/env-injection main=main dirty=2
+</env>
+```
+
+~80-120 tokens. Always fresh (re-read every turn so a `git checkout` in another shell is reflected next turn). Includes what the model asks about most often on turn 1: where am I, what OS, what branch, is the tree clean. `git status --porcelain | wc -l` collapses "dirty file count" to one integer — the model doesn't need the filename list on turn 1, just the answer to "is this repo clean or not."
+
+The design trade is **cost vs. latency**. Always-fresh env costs ~100 tokens every turn the model never reads them. But waiting for a tool-call round-trip to learn the branch costs a whole extra forward pass — which is far more expensive than 100 tokens of input. Same trade as Claude Code's startup env block.
+
+A subtle correctness choice: when `git` fails (not a repo, command missing, timeout), `_git()` returns `None` and `_env_block` prints `git: (not a repository)` rather than crashing or silently omitting the field. The model prefers an explicit "no" to a missing field, because a missing field reads as "unknown" — and the model will then waste a tool call verifying.
+
+See: `agent.py:_env_block`, `agent.py:_git`
+
+## 29. Plan mode revisited — read/write split
+
+§27 shipped plan mode as "block all tool calls." In testing, plans came back generic — "use `rich` for better formatting" when `rich` is already the foundation, "improve error handling" with no specifics. The model couldn't investigate before proposing, so it fell back to platitudes.
+
+Root cause: a plan not grounded in code is just vibes. Claude Code's plan mode allows read-only tools (it uses `ExitPlanMode` as the only *terminal* action); the model is expected to `grep`/`read_file` freely while planning, then present a concrete proposal.
+
+Fix in two lines of code:
+
+```python
+READ_ONLY_TOOLS = frozenset({
+    "glob", "grep", "read_file", "get_current_time", "harness_info"
+})
+# ...
+if plan_mode and name not in READ_ONLY_TOOLS:
+    results[i] = "Plan mode: <name> is a mutating tool and was not executed. ..."
+    continue
+```
+
+Plus a stronger system-prompt nudge: "Your plan must reference specific files and line numbers you have actually read — generic advice is not acceptable."
+
+The principle: **planning is an investigation phase, not a silence phase**. A planner with no reads is a stochastic parrot; a planner with reads (and no writes) is a reviewer who hasn't committed yet. The mutation gate is what makes plan mode a safety feature instead of just a prompt hint.
+
+Allow-list over deny-list because new tools default to blocked. A future `delete_file` added to the schema is automatically gated without needing to update `plan_mode` logic.
+
+See: `agent.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
+
 ---
 
 ## To cover next

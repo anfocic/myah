@@ -1,7 +1,11 @@
 # agent.py
 import json
+import os
+import platform
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 
 import ollama
@@ -9,6 +13,13 @@ from rich.live import Live
 from rich.markdown import Markdown
 
 from config import MODEL_NAME, NUM_CTX, STREAM_DELAY_MS, TOOL_RESULT_MAX_BYTES
+
+# Tools the plan-mode gate lets through unchanged. Everything else gets
+# short-circuited so the model can investigate (glob/grep/read) while
+# planning, but can't mutate state until plan mode is turned off.
+READ_ONLY_TOOLS = frozenset(
+    {"glob", "grep", "read_file", "get_current_time", "harness_info"}
+)
 
 LOG_FILE = Path("logs/agent.jsonl")
 
@@ -128,8 +139,45 @@ def summarize_dropped(dropped: list) -> str:
     return (response.message.content or "").strip()
 
 
+def _git(*args: str) -> str | None:
+    """Run a git command, return stripped stdout, or None on any failure
+    (not a repo, git missing, detached state, etc.)."""
+    try:
+        out = subprocess.check_output(
+            ["git", *args],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+        return out.strip() or None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _env_block() -> str:
+    """Compact environment snapshot prepended to every system prompt so the
+    model has cwd / platform / git state on turn 1 without burning a tool
+    call. Kept small — ~80-120 tokens depending on git state."""
+    lines = [
+        f"cwd: {os.getcwd()}",
+        f"platform: {platform.system().lower()} ({platform.machine()})",
+        f"date: {date.today().isoformat()}",
+    ]
+    branch = _git("branch", "--show-current")
+    if branch:
+        main_ref = _git("rev-parse", "--abbrev-ref", "origin/HEAD")
+        main = main_ref.split("/", 1)[-1] if main_ref else "main"
+        porcelain = _git("status", "--porcelain")
+        dirty = len(porcelain.splitlines()) if porcelain else 0
+        lines.append(f"git: branch={branch} main={main} dirty={dirty}")
+    else:
+        lines.append("git: (not a repository)")
+    return "<env>\n" + "\n".join(lines) + "\n</env>"
+
+
 def _build_system_prompt(plan_mode: bool = False) -> str:
-    """Base persona + (if the cwd has a CLAUDE.md) project context appended."""
+    """Base persona + env block + (if the cwd has a CLAUDE.md) project
+    context + (if plan mode) planning rules."""
     base = f"""You are Mia, a personal assistant.
 You are running on the {MODEL_NAME} model served locally via Ollama.
 You were NOT built by OpenAI or Anthropic. If asked who you are or what model
@@ -142,7 +190,7 @@ Rules:
 - For tasks needing multiple steps, do them one at a time
 - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path"""
 
-    parts = [base]
+    parts = [base, _env_block()]
 
     # Re-read every turn so edits to CLAUDE.md take effect without restarting.
     # File is typically small; re-read cost is negligible vs. an LLM call.
@@ -158,9 +206,18 @@ Rules:
 
     if plan_mode:
         parts.append(
-            "PLAN MODE is ON. Describe what you WOULD do, step-by-step, and wait "
-            "for the user to confirm. Do NOT call any tools yet — tool calls will "
-            "be rejected until the user turns plan mode off with /plan."
+            "PLAN MODE is ON.\n\n"
+            "BEFORE proposing anything, you MUST investigate the codebase. For any "
+            "plan that touches existing code, call `glob` and/or `grep` to find "
+            "what exists, then `read_file` on the relevant files. Your plan must "
+            "reference specific files and line numbers you have actually read — "
+            "generic advice (\"add logging\", \"improve errors\", \"use rich\") "
+            "is not acceptable. If the user's request mentions an existing feature "
+            "or file, read the current implementation first.\n\n"
+            "After investigating, describe the proposed changes step-by-step and "
+            "wait for the user to confirm. Mutating tools (write_file, edit_file, "
+            "bash) are rejected automatically until /plan is toggled off. Read-only "
+            f"tools ({', '.join(sorted(READ_ONLY_TOOLS))}) still work."
         )
 
     return "\n\n".join(parts)
@@ -298,21 +355,24 @@ def _run_tools_parallel(
     execution for approved calls → results returned in original tool_calls
     order so the model sees them aligned with its request.
 
-    In plan_mode, nothing executes; every call returns a canned string.
-    Permission prompts are skipped too (no work is happening)."""
+    In plan_mode, read-only tools (grep/glob/read_file/etc.) still run so
+    the model can ground its plan in the actual code. Mutating tools are
+    short-circuited with a canned string; no permission prompt fires for
+    them since no work would happen."""
     n = len(tool_calls)
     results: list[str | None] = [None] * n
-
-    if plan_mode:
-        return [
-            "Plan mode is on — tool call not executed. Describe the plan instead."
-            for _ in tool_calls
-        ]
 
     approved: list[tuple[int, str, dict]] = []
     for i, tc in enumerate(tool_calls):
         name = tc.function.name
         args = tc.function.arguments
+        if plan_mode and name not in READ_ONLY_TOOLS:
+            results[i] = (
+                f"Plan mode: {name} is a mutating tool and was not executed. "
+                "Use read-only tools (glob, grep, read_file, harness_info) to "
+                "investigate, then describe the proposed changes."
+            )
+            continue
         if permission_check and not permission_check(name, args):
             results[i] = "User denied this tool call."
         else:
