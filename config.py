@@ -1,22 +1,45 @@
 import os
 
 # Which backend the provider layer talks to. Override via env:
-#     MIA_PROVIDER=openai-compat python main.py
-MODEL_PROVIDER = os.environ.get("MIA_PROVIDER", "ollama")  # "ollama" | "openai-compat"
+#     MIA_PROVIDER=anthropic python main.py
+# Supported: ollama | openai-compat | openai | anthropic | deepseek
+MODEL_PROVIDER = os.environ.get("MIA_PROVIDER", "ollama")
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 OLLAMA_MODEL = "qwen2.5:7b-instruct"
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# ── OpenAI-compatible HTTP (llama.cpp server, LM Studio, vLLM, Groq, Together, …)
+# ── OpenAI-compatible HTTP (llama.cpp server, LM Studio, vLLM, OpenRouter, …)
 OPENAI_COMPAT_MODEL = os.environ.get("OPENAI_COMPAT_MODEL", "gpt-4o-mini")
 OPENAI_COMPAT_BASE_URL = os.environ.get("OPENAI_COMPAT_BASE_URL", "http://localhost:8080/v1")
 # API key read inside the factory from OPENAI_COMPAT_API_KEY (empty is fine for
 # local servers that don't check auth).
 
+# ── Hosted first-party providers ──────────────────────────────────────────────
+# These read their own <NAME>_MODEL / <NAME>_API_KEY / <NAME>_BASE_URL env
+# vars directly in providers/__init__.py; config.py holds no defaults so we
+# don't duplicate the provider presets. Set the relevant env vars and flip
+# MIA_PROVIDER to pick one up:
+#     MIA_PROVIDER=openai    OPENAI_API_KEY=...    OPENAI_MODEL=gpt-4.1-mini
+#     MIA_PROVIDER=anthropic ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=claude-sonnet-4-6
+#     MIA_PROVIDER=deepseek  DEEPSEEK_API_KEY=...  DEEPSEEK_MODEL=deepseek-chat
+
 # Active model name, derived from provider. Both /context and harness_info
 # already read this, so the slash/tool surfaces stay provider-agnostic.
-MODEL_NAME = OLLAMA_MODEL if MODEL_PROVIDER == "ollama" else OPENAI_COMPAT_MODEL
+# For the hosted providers we resolve against the env var at import time so
+# /context shows something sensible before the first turn runs.
+if MODEL_PROVIDER == "ollama":
+    MODEL_NAME = OLLAMA_MODEL
+elif MODEL_PROVIDER == "openai-compat":
+    MODEL_NAME = OPENAI_COMPAT_MODEL
+elif MODEL_PROVIDER == "openai":
+    MODEL_NAME = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+elif MODEL_PROVIDER == "anthropic":
+    MODEL_NAME = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+elif MODEL_PROVIDER == "deepseek":
+    MODEL_NAME = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+else:
+    MODEL_NAME = OLLAMA_MODEL  # fall back; the factory will raise on first use
 
 # Context window budget — set explicitly so we know the real limit.
 # qwen2.5:7b default is 4096; bump to 8192 if your Ollama build supports it.

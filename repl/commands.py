@@ -5,6 +5,7 @@ that don't use `arg` ignore it, so `handle_slash` can dispatch uniformly
 without inspecting function signatures."""
 from agent import apply_summary, compact_history
 from providers import (
+    SUPPORTED_PROVIDERS,
     ProviderError,
     build_provider,
     get_active_provider,
@@ -137,9 +138,12 @@ def cmd_model(state: State, arg: str = "") -> None:
     available ollama tags + the current model. With arg → swap.
 
     Arg shapes:
-        /model qwen2.5:14b             — same provider, different model
-        /model ollama:qwen2.5:14b      — force ollama backend
-        /model openai-compat:gpt-4o-mini — cross-provider swap
+        /model qwen2.5:14b               — same provider, different model
+        /model ollama:qwen2.5:14b        — force ollama backend
+        /model openai-compat:gpt-4o-mini — local OpenAI-compat server
+        /model openai:gpt-4.1-mini       — first-party OpenAI
+        /model anthropic:claude-sonnet-4-6 — first-party Anthropic
+        /model deepseek:deepseek-chat    — DeepSeek
     """
     current = get_active_provider()
     if not arg.strip():
@@ -162,7 +166,10 @@ def cmd_model(state: State, arg: str = "") -> None:
         return
 
     # Parse "<provider>:<model>" vs plain "<model>" (keep current provider).
-    if ":" in arg and arg.split(":", 1)[0] in {"ollama", "openai-compat"}:
+    # Only treat the first colon as a separator if the prefix is a known
+    # provider name — otherwise `qwen2.5:14b` (which contains a colon in
+    # its ollama tag) would be misread as provider="qwen2.5".
+    if ":" in arg and arg.split(":", 1)[0] in SUPPORTED_PROVIDERS:
         provider_name, model = arg.split(":", 1)
     else:
         provider_name, model = current.name, arg

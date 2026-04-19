@@ -53,6 +53,9 @@ def _env_block() -> str:
 _SERVED_VIA = {
     "ollama": "served locally via Ollama",
     "openai-compat": "served via an OpenAI-compatible HTTP API",
+    "openai": "served by OpenAI",
+    "anthropic": "served by Anthropic",
+    "deepseek": "served by DeepSeek",
 }
 
 
