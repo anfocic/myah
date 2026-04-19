@@ -99,6 +99,18 @@ An agent harness is a `while True` around a chat call. Each turn:
 
 The "agentic" part is step 3 — the model can chain tool calls across many inner iterations before producing a final answer for the user.
 
+```mermaid
+flowchart TD
+    U[user input] --> B[messages = system + history + new_user]
+    B --> C[provider.stream_chat]
+    C --> D{tool_calls?}
+    D -->|yes| E[execute each tool]
+    E --> F["append role:tool results"]
+    F --> C
+    D -->|no| G[append final user/assistant pair to history]
+    G --> H["return content, history, ctx_used"]
+```
+
 See: `agent/loop.py:run_agent`
 
 ## 2. Tool calling (OpenAI function-calling format)
@@ -118,6 +130,21 @@ Tools are declared to the model as JSON schemas:
 
 The model returns `tool_calls[*].function.name` + `arguments`. The harness is responsible for actually executing them — the model just *describes* the call.
 
+```mermaid
+sequenceDiagram
+    participant H as Harness
+    participant M as Model
+    participant T as Local tool
+    H->>M: messages + tool schemas
+    M-->>H: tool_calls [name, arguments]
+    Note over M: model only describes
+    H->>T: execute(name, args)
+    T-->>H: result string
+    Note over H: harness actually runs it
+    H->>M: append role:tool result, loop
+    M-->>H: final content (no tool_calls)
+```
+
 Ollama, OpenAI, and Anthropic all use slight variants of this same schema shape.
 
 ## 3. History vs messages
@@ -129,9 +156,38 @@ Two lists, easily confused:
 
 Tool messages are deliberately **not** kept in history — they're intermediate work, not conversation.
 
+```mermaid
+flowchart LR
+    subgraph persist["history (persistent, in main.py)"]
+        H1["user/assistant<br/>user/assistant<br/>..."]
+    end
+    subgraph turn["messages (fresh each run_agent call)"]
+        direction TB
+        M1["system prompt"]
+        M2["+ history"]
+        M3["+ new_user"]
+        M4["+ role:tool results<br/>(grown within turn)"]
+    end
+    H1 -->|copied in| M2
+    M4 -.->|only complete<br/>user/assist pairs| H1
+```
+
 ## 4. Context window
 
 The model has a fixed token budget (`NUM_CTX`, default 4096). Everything you send — system prompt, history, tool schemas, tool results — counts against it. Overflow = silent truncation in Ollama.
+
+```mermaid
+flowchart LR
+    subgraph budget["NUM_CTX = 4096 tokens (fixed)"]
+        direction LR
+        S[system prompt]
+        T[tool schemas]
+        Hi[history]
+        N[new user msg]
+        R[tool results]
+    end
+    budget -.->|overflow| X["silent truncation<br/>(Ollama)"]
+```
 
 ## 5. Token counting: estimate vs real
 
@@ -148,6 +204,16 @@ See: `agent/tokens.py:estimate_tokens`
 
 When `ctx_used > 80% * NUM_CTX`, drop oldest user/assistant pairs from history until back under 50%. Two thresholds (`high` / `target`) create hysteresis — you don't trim-one-pair every single turn.
 
+```mermaid
+flowchart TD
+    Start[turn end] --> C{"ctx_used > 80% * NUM_CTX?"}
+    C -->|no| Done[stop]
+    C -->|yes| T[drop oldest user/assistant pair]
+    T --> U{"ctx_used < 50% * NUM_CTX?"}
+    U -->|no| T
+    U -->|yes| Done
+```
+
 See: `agent/context.py:trim_history`
 
 ## 7. Summarize dropped turns
@@ -155,6 +221,21 @@ See: `agent/context.py:trim_history`
 Naive trim loses information. The fix: before dropping, ask the model to compress the dropped messages into 2-3 sentences, then inject the summary back as a synthetic `role:"system"` note at the start of history.
 
 Cost: one extra model call per trim event. Benefit: you keep the gist of old context instead of amnesia.
+
+```mermaid
+flowchart TD
+    subgraph before["before trim"]
+        B["user1/assist1<br/>user2/assist2<br/>user3/assist3<br/>user4/assist4"]
+    end
+    subgraph naive["naive trim (amnesia)"]
+        N["user3/assist3<br/>user4/assist4"]
+    end
+    subgraph smart["summarize-then-trim"]
+        S["system: Earlier: summary of turns 1-2<br/>user3/assist3<br/>user4/assist4"]
+    end
+    before --> naive
+    before -->|"+1 model call"| smart
+```
 
 See: `agent/context.py:summarize_dropped`
 
@@ -174,6 +255,14 @@ Every `ollama.chat` call is appended as one JSON line to `logs/agent.jsonl`. Fie
 - `messages_in_prompt` — how big the prompt was
 
 JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`, and unlike a single JSON array it doesn't require rewriting the whole file on each write.
+
+```mermaid
+flowchart LR
+    C[ollama.chat] --> R[response object]
+    R --> L[log_response]
+    L -->|append one line| J["logs/agent.jsonl"]
+    J --> G["jq / grep<br/>(no rewrite needed)"]
+```
 
 See: `agent/status.py:log_response`
 
