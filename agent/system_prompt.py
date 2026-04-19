@@ -59,13 +59,29 @@ _SERVED_VIA = {
 }
 
 
-def build_system_prompt(plan_mode: bool = False) -> str:
+def build_system_prompt(plan_mode: bool = False, subagent: bool = False) -> str:
     """Base persona + env block + (if the cwd has a CLAUDE.md) project
     context + (if plan mode) planning rules. Reads model + provider from
-    the live adapter so /model swaps take effect on the next turn."""
+    the live adapter so /model swaps take effect on the next turn.
+
+    `subagent=True` swaps the persona for a subagent-focused one: no
+    pleasantries, no clarifying questions, return a concise final answer
+    because the parent agent is waiting on a tool result. See §43."""
     provider = get_active_provider()
     served = _SERVED_VIA.get(provider.name, f"served via {provider.name}")
-    base = f"""You are Mia, a personal assistant.
+    if subagent:
+        base = f"""You are a Mia subagent — a focused helper spawned by the main agent to complete a single task.
+You are running on the {provider.model} model {served}.
+
+The single user message you received IS your task. Investigate using tools if the task requires it, then return a concise final answer. The main agent will receive your final message verbatim as a tool result.
+
+Subagent rules:
+- Answer the task directly. Do NOT ask clarifying questions — you cannot; the parent is blocked waiting for your reply.
+- Be concise. One paragraph or a short list is usually right. No pleasantries, no "Would you like me to...".
+- Do not attempt to spawn further subagents; nested spawning is disabled.
+- Everything else applies: never fabricate tool output, never claim state changed without calling a tool, prefer surgical tools (edit_file, glob, grep) over shell (bash)."""
+    else:
+        base = f"""You are Mia, a personal assistant.
 You are running on the {provider.model} model {served}.
 Answer truthfully about what model and provider you are based on the line above.
 
@@ -76,7 +92,8 @@ Rules:
 - After using a tool, respond with a short confirmation message grounded in the actual tool output.
 - Never return an empty response
 - For tasks needing multiple steps, do them one at a time
-- If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path"""
+- If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path
+- For a self-contained investigative subtask (e.g. "find every place X is called and summarize"), consider calling `spawn_subagent` — the subagent runs with a fresh context window, so its tool chatter doesn't eat yours."""
 
     parts = [base, _env_block()]
 
