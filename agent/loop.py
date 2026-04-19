@@ -14,9 +14,6 @@ upstairs in main.py / repl/."""
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from rich.live import Live
-from rich.markdown import Markdown
-
 from agent import READ_ONLY_TOOLS
 from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response, status_line
@@ -32,7 +29,6 @@ def run_agent(
     tools: list,
     execute_tool,
     history: list | None = None,
-    status=None,
     console=None,
     permission_check=None,
     plan_mode: bool = False,
@@ -62,8 +58,6 @@ def run_agent(
             n_elided = microcompact(messages)
             if n_elided:
                 if console:
-                    if status:
-                        status.stop()  # else spinner redraws over our line
                     console.print(
                         f"[dim yellow]↳ microcompact: elided "
                         f"{n_elided} old tool result(s)[/dim yellow]"
@@ -71,69 +65,63 @@ def run_agent(
                 ctx_used = estimate_tokens(messages)
         if debug and console:
             _debug_dump_messages(console, messages)
-        if status:
-            status.update(status_line("Thinking...", ctx_used, time.time() - start))
-            status.start()  # idempotent; re-arms spinner after a streaming phase
+        if console:
+            # Under patch_stdout, an animated region fights the pinned
+            # prompt; an append-only log line avoids the cursor war.
+            console.print(status_line("Thinking..."))
 
         content_parts: list[str] = []
         tool_calls: list = []
         final_usage: Usage | None = None
         first_content_seen = False
         ttft_ms: int | None = None
-        live: Live | None = None
 
         provider = get_active_provider()
         try:
-            try:
-                for chunk in provider.stream_chat(messages, tools, NUM_CTX):
-                    if chunk.content_delta:
-                        if not first_content_seen:
-                            first_content_seen = True
-                            ttft_ms = int((time.time() - start) * 1000)
-                            if status:
-                                status.stop()
-                            if console:
-                                console.print(
-                                    "\n[bold cyan]Mia[/bold cyan] [dim]›[/dim]"
-                                )
-                                live = Live(
-                                    Markdown(""),
-                                    console=console,
-                                    refresh_per_second=12,
-                                    vertical_overflow="visible",
-                                )
-                                live.start()
-                        content_parts.append(chunk.content_delta)
-                        if live is not None:
-                            live.update(Markdown("".join(content_parts)))
-                            if STREAM_DELAY_MS:
-                                time.sleep(STREAM_DELAY_MS / 1000)
+            for chunk in provider.stream_chat(messages, tools, NUM_CTX):
+                if chunk.content_delta:
+                    if not first_content_seen:
+                        first_content_seen = True
+                        ttft_ms = int((time.time() - start) * 1000)
+                        if console:
+                            # Blank separator before the response begins.
+                            console.print()
+                    content_parts.append(chunk.content_delta)
+                    # Stream tokens as plain text so they scroll above the
+                    # pinned prompt under patch_stdout. Markdown formatting
+                    # is applied once at end of stream (see below) because
+                    # in-place re-rendering via rich.live.Live is incompatible
+                    # with prompt_toolkit's patched stdout — they both drive
+                    # the terminal's cursor and fight over it.
+                    if console:
+                        console.out(chunk.content_delta, end="", highlight=False)
+                        if STREAM_DELAY_MS:
+                            time.sleep(STREAM_DELAY_MS / 1000)
 
-                    if chunk.tool_calls:
-                        tool_calls.extend(chunk.tool_calls)
+                if chunk.tool_calls:
+                    tool_calls.extend(chunk.tool_calls)
 
-                    if chunk.done:
-                        final_usage = chunk.usage
-            except KeyboardInterrupt:
-                # Let main.py decide how to render the abort. history is
-                # untouched because we only append on successful completion.
-                if status:
-                    status.stop()
-                raise
-            except ProviderError as e:
-                if status:
-                    status.stop()
-                if console:
-                    console.print(
-                        f"\n[red]Provider error ({provider.name}):[/red] {e}"
-                    )
-                # Same discipline as Ctrl+C: history untouched, return to REPL.
-                return "", history, ctx_used, {
-                    "ttft_ms": None, "completion_tokens": None, "tok_per_s": None,
-                }
+                if chunk.done:
+                    final_usage = chunk.usage
+        except KeyboardInterrupt:
+            # Let main.py decide how to render the abort. history is
+            # untouched because we only append on successful completion.
+            raise
+        except ProviderError as e:
+            if console:
+                console.print(
+                    f"\n[red]Provider error ({provider.name}):[/red] {e}"
+                )
+            # Same discipline as Ctrl+C: history untouched, return to REPL.
+            return "", history, ctx_used, {
+                "ttft_ms": None, "completion_tokens": None, "tok_per_s": None,
+            }
         finally:
-            if live is not None:
-                live.stop()
+            if first_content_seen and console:
+                # Newline terminates the plain-text streaming chunk line so
+                # the post-turn status line doesn't land at the end of the
+                # last token.
+                console.print()
 
         content = "".join(content_parts)
         log_response(
@@ -166,9 +154,7 @@ def run_agent(
                 execute_tool,
                 permission_check,
                 plan_mode=plan_mode,
-                status=status,
-                ctx_used=ctx_used,
-                start=start,
+                console=console,
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
             )
@@ -189,9 +175,7 @@ def run_agent(
             if not content:
                 content = "Done."
                 if console:
-                    console.print(
-                        f"\n[bold cyan]Mia[/bold cyan] [dim]›[/dim] {content}"
-                    )
+                    console.print(f"\n{content}")
             history.append({"role": "user", "content": user_input})
             history.append({"role": "assistant", "content": content})
             # Streaming rate: completion tokens divided by seconds spent
@@ -236,9 +220,7 @@ def _run_tools_parallel(
     permission_check,
     *,
     plan_mode: bool,
-    status,
-    ctx_used: int,
-    start: float,
+    console=None,
     on_tool_start=None,
     on_tool_end=None,
 ) -> list[str]:
@@ -321,14 +303,9 @@ def _run_tools_parallel(
                     results[i] = msg
                     _notify_end(name, args, msg, False)
                 done += 1
-                if status:
-                    status.update(
-                        status_line(
-                            "Running tools",
-                            ctx_used,
-                            time.time() - start,
-                            progress=(done, len(approved)),
-                        )
+                if console:
+                    console.print(
+                        status_line("Running tools", progress=(done, len(approved)))
                     )
 
     return [r if r is not None else "" for r in results]

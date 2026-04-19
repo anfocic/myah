@@ -21,9 +21,6 @@ def test_no_permission_check_denies_sensitive_tools():
         fake_execute,
         permission_check=None,
         plan_mode=False,
-        status=None,
-        ctx_used=0,
-        start=0,
     )
 
     # Only read_file ran
@@ -49,9 +46,6 @@ def test_explicit_permission_check_overrides_default():
         fake_execute,
         permission_check=allow_all,
         plan_mode=False,
-        status=None,
-        ctx_used=0,
-        start=0,
     )
 
     assert executed == ["write_file"]

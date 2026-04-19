@@ -13,23 +13,20 @@ from providers import Usage, get_active_provider
 LOG_FILE = Path("logs/agent.jsonl")
 
 
-def _fmt_tokens(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
-
-
 def status_line(
     verb: str,
-    tokens: int,
-    elapsed: float,
     progress: tuple[int, int] | None = None,
 ) -> str:
-    """Compose the spinner status line: verb · progress · tokens · elapsed."""
-    parts = [f"[yellow]{verb}[/yellow]"]
+    """Compose the spinner status line: `verb (N/M)`.
+
+    Earlier versions added an `↑ N tokens · Xs` tail, but the token count
+    was stale (it was last turn's `ctx_used`, not current prompt size) and
+    therefore misleading. Keeping only the verb + optional progress gives
+    real feedback ("something is happening, and here's what") without
+    pretending to report numbers we can't cheaply measure mid-turn."""
     if progress:
-        parts.append(f"[dim]({progress[0]}/{progress[1]})[/dim]")
-    parts.append(f"[dim]· ↑ {_fmt_tokens(tokens)} tokens[/dim]")
-    parts.append(f"[dim]· {elapsed:.0f}s[/dim]")
-    return " ".join(parts)
+        return f"[yellow]{verb}[/yellow] [dim]({progress[0]}/{progress[1]})[/dim]"
+    return f"[yellow]{verb}[/yellow]"
 
 
 def log_response(
