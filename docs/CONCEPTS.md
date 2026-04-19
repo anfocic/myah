@@ -80,6 +80,9 @@ Running notes on every concept introduced while building this harness. Read top-
 **Security**
 41. [Prompt injection defenses — two layers, neither a sandbox](#41-prompt-injection-defenses--two-layers-neither-a-sandbox)
 
+**Providers**
+44. [First-party adapters — Anthropic native, OpenAI/DeepSeek preset](#44-first-party-adapters--anthropic-native-openaideepseek-preset)
+
 ---
 
 ## 1. The agentic loop
@@ -964,10 +967,61 @@ See: `repl/ui.py:build_session`, `repl/ui.py:SlashCompleter`, `main.py` (`with p
 
 ---
 
+## 44. First-party adapters — Anthropic native, OpenAI/DeepSeek preset
+
+Up until now Mia could talk to two things: Ollama (local) and a generic OpenAI-compatible HTTP endpoint (llama.cpp, LM Studio, vLLM, OpenRouter, etc.). That generic path papers over a real question: when you add a second, *different* hosted API, does the `Provider` Protocol hold up? The answer tells you whether the abstraction is load-bearing or decorative.
+
+### Two kinds of "new provider"
+
+The PR that added hosted providers split them by how much adapter code they actually need:
+
+- **Anthropic — native adapter**. The Messages API diverges from OpenAI's Chat Completions in four ways that matter: system prompt is a top-level field (not a message), tool calls are typed content blocks (`{"type": "tool_use"}`) inside the assistant's `content` array (not a sibling `tool_calls` list), streaming uses event-tagged SSE (`event: content_block_delta`) with partial-JSON fragments for tool arguments, and tool schemas use `{name, description, input_schema}` instead of `{type, function: {...}}`. Four translations, one SSE parser. Real adapter code.
+- **OpenAI / DeepSeek — factory presets**. Both speak OpenAI Chat Completions verbatim; they just live at different hostnames and use different API-key env vars. No adapter code, just a `build_provider` branch that points the existing `OpenAICompatProvider` at `api.openai.com` (or `api.deepseek.com`) with the right key. When someone asks "why is that its own provider name?" — the answer is: it isn't, really. It's a convenience so `MIA_PROVIDER=deepseek` works without the user memorizing `OPENAI_COMPAT_BASE_URL=https://api.deepseek.com/v1 OPENAI_COMPAT_API_KEY=...`.
+
+The ratio here is the useful data point: **one real protocol adapter per "genuinely different" API**. LiteLLM and similar wrappers ship a dozen "provider" classes because they serve every feature of every vendor; Mia's three branches-that-reuse-one-class vs. one-real-adapter split is what a first-principles harness actually needs.
+
+### What the native Anthropic adapter reconciles
+
+Four translations live in `_translate_messages` / `_translate_tools` / `_parse_sse`:
+
+1. **Lift system out.** Walk the messages list once, collect every `role: system` content into a string, return it as a top-level `system` field. Summaries from the §7 summarize-dropped path arrive as additional system messages mid-history; they get concatenated with blank-line separators so the wire format still has a single system value.
+
+2. **Turn assistant tool calls into content blocks.** Internal shape is `{role: assistant, content: "...", tool_calls: [{name, arguments}]}`. Anthropic wants `{role: assistant, content: [{type: text, text: ...}, {type: tool_use, id, name, input}]}`. A leading text block is only emitted if the assistant actually said something — an empty text block is rejected by the API. Tool IDs are synthesized (`toolu_0`, `toolu_1`, ...) and the following `tool_result` blocks reference them in order.
+
+3. **Coalesce parallel tool results.** Mia's internal format emits one `role: tool` message per result. Anthropic rejects two adjacent user turns where both carry only tool_results — they must live in one user message with a content array. The translator peeks at the previous output entry and appends to its content list if it's already a tool-result-only user turn.
+
+4. **SSE event parsing.** Anthropic streams seven event types (`message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`, `ping`). Text streams as `text_delta` events; tool arguments stream as `input_json_delta` events carrying partial-JSON string fragments that the adapter buffers per block index and JSON-parses on `content_block_stop`. `ping` and unknown event types are silently ignored so future event types don't crash an older client. Usage comes in two halves: `input_tokens` on `message_start`, `output_tokens` on `message_delta`.
+
+The output of all of that is the same `StreamChunk` dataclass the Ollama and OpenAI-compat adapters yield. Nothing in `agent/loop.py` or above cares which provider is on the other end.
+
+### Why the Anthropic key check fails closed
+
+`AnthropicProvider.__init__` raises `ProviderError` when `ANTHROPIC_API_KEY` is empty. This breaks a Protocol-level symmetry: Ollama has no key, OpenAI-compat passes through an empty key (many local servers don't check auth), but Anthropic rejects silently. The tradeoff:
+
+- If we let it through, the first turn produces an opaque `HTTP 401: ... authentication_error` after the user's waited for a response. Discoverability is bad.
+- Failing closed at construction means the user sees `ProviderError: ANTHROPIC_API_KEY is not set` at startup or at `/model` swap time — before any turn runs.
+
+We pick startup-time failure because the failure mode is deterministic (no key = no traffic ever works) and early. OpenAI-compat is probabilistic (sometimes works, sometimes 401s) and so gets a pass — an empty key might be the right answer.
+
+### What we didn't build
+
+- **Prompt caching (`cache_control` breakpoints).** Anthropic's cache can reduce prompt costs 10x on repeated system prompts + long history. Slot for it exists: annotate the system prompt with `{"type": "text", "text": ..., "cache_control": {"type": "ephemeral"}}` in the translator. Not done because Mia doesn't know how to decide where to put breakpoints yet; see `docs/ROADMAP.md` Tier 4.
+- **Extended thinking blocks.** Claude 4 series can return `thinking` content blocks before the text response. Current adapter drops them (the parser's unknown-event fallback). Plumbing them up to the UI as a collapsed reasoning region is a visible UX change — separate PR.
+- **OpenAI Responses API.** The newer `/v1/responses` endpoint replaces Chat Completions for some use cases and exposes `reasoning_effort` for o-series models. Not needed for parity with today's behavior; shipping it would motivate splitting the openai-compat preset into its own `OpenAIProvider` class.
+- **DeepSeek `deepseek-reasoner`.** Reasoning-mode toggles and FIM endpoints. Same rationale — no shipped adapter behavior depends on them yet.
+
+### The lesson the Protocol survived
+
+A Protocol that only covers one real backend is indistinguishable from hard-coding. Adding Anthropic was the first time the `Provider` abstraction got squeezed by a genuinely different wire format, and the squeeze produced exactly one adapter file plus three factory branches. The `StreamChunk` shape, the `(messages, tools, num_ctx) -> iterator` signature, and the `history` + `tool_calls`-on-assistant internal convention all held up without modification. **That's the test of an abstraction**: what survives when you add the second hard case.
+
+See: `providers/anthropic_adapter.py`, `providers/__init__.py` (factory + `SUPPORTED_PROVIDERS`), `agent/system_prompt.py:_SERVED_VIA` (the one non-provider file that cares about the name), `tests/test_anthropic_adapter.py`, `tests/test_provider_factory.py`
+
+---
+
 ## To cover next
 
 - [ ] System prompt as configuration, not hardcode
-- [ ] Multi-provider abstraction (OpenAI / Anthropic / Ollama)
+- [x] Multi-provider abstraction (OpenAI / Anthropic / Ollama — §44)
 - [x] Tool-call error handling (model calls a tool that raises — `_run_tools_parallel` catches and returns as data)
 - [x] Parallel tool calls (model returns 2+ calls in one turn — §25)
 - [x] Persisting history across sessions (§26)
