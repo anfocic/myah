@@ -228,7 +228,7 @@ See: `agent/context.py:summarize_dropped`
 
 `rich.Console` gives colored output, BBCode-style markup (`[bold cyan]...[/bold cyan]`), and styled input prompts. Zero terminal escape-code wrangling.
 
-See: `main.py:ctx_tag`
+See: `repl/ui.py:ctx_tag`
 
 ---
 
@@ -450,7 +450,7 @@ The pedagogy: **side effects belong at commit points, not mid-stream.** `run_age
 
 The surprise: the *import* is the feature. Python's `input()` silently upgrades its behavior if `readline` is importable. No API calls needed to get arrow keys working — just the side-effect of importing. Classic Python.
 
-See: `agent/loop.py:run_agent` (try/except block), `main.py:_load_input_history`
+See: `agent/loop.py:run_agent` (try/except block), `repl/ui.py:build_session` (FileHistory wiring)
 
 ---
 
@@ -461,7 +461,7 @@ Three inputs hit the REPL: `hello`, `/clear`, `exit`. Two of them never reach th
 - **Data plane**: tokens flowing to/from the model. User text, tool calls, tool results, assistant replies. Every byte costs latency + tokens.
 - **Control plane**: harness-local operations with zero model involvement. `/clear`, `/help`, `/context`, `exit`, the permission prompt's y/n. Instant, free, deterministic.
 
-`main.py:handle_slash` dispatches any input starting with `/` against a `SLASH_COMMANDS` dict: `{name: (handler, description)}`. If it matches, the handler mutates the REPL's `state` dict (history list, last `ctx_used`) and `continue`s the loop — the model never saw a turn happen. `/help` reads its own registry to render the list, so adding a new command only requires touching the dict.
+`repl/commands.py:handle_slash` dispatches any input starting with `/` against a `SLASH_COMMANDS` dict: `{name: (handler, description)}`. If it matches, the handler mutates the REPL's `state` dict (history list, last `ctx_used`) and `continue`s the loop — the model never saw a turn happen. `/help` reads its own registry to render the list, so adding a new command only requires touching the dict.
 
 Two design choices worth naming:
 
@@ -469,7 +469,7 @@ Two design choices worth naming:
 
 2. **Slash ≠ tool.** The model could call a hypothetical `clear_history` tool and get the same effect, but that would be bad design: `/clear` is a *user* action, not a *reasoning* action. Separating them means the model can't erase context on itself mid-plan, and the user never has to wait for a model round-trip to reset. The tool layer is for things the model needs to reason *with*; the slash layer is for things the user does *to* the harness. (Separately, a `harness_info` tool for mid-turn introspection is still useful — that's data-plane. Different job.)
 
-See: `main.py:SLASH_COMMANDS`, `main.py:handle_slash`
+See: `repl/commands.py:SLASH_COMMANDS`, `repl/commands.py:handle_slash`
 
 ---
 
@@ -489,7 +489,7 @@ Chose (3). `agent.py` stays state-ignorant; `main.py` owns the state; the tool s
 
 The caveat written into the output string: `ctx_used` is the **previous turn's settled value**, not "right now." There is no "right now" — the model is calling the tool from *inside* the current turn, and the harness doesn't know the final prompt token count until the response lands. Saying so in the output prevents the model from reasoning about stale data as if it were live.
 
-See: `tools/harness.py`, `main.py:make_execute_tool`
+See: `tools/harness.py`, `repl/tool_registry.py:make_execute_tool`
 
 ---
 
@@ -580,7 +580,7 @@ Claude Code does this with a dedicated `ExitPlanMode` tool that's the *only* cal
 
 Surfaced in `/context` and the `harness_info` tool so the model can detect its own mode when asked ("am I in plan mode?").
 
-See: `agent/system_prompt.py:build_system_prompt` (plan block), `agent/loop.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
+See: `agent/system_prompt.py:build_system_prompt` (plan block), `agent/loop.py:_run_tools_parallel` (short-circuit), `repl/commands.py:cmd_plan`
 
 ---
 
@@ -690,7 +690,7 @@ Four design choices worth naming:
 
 A related streaming note: **TTFT and generation time are distinct.** `tok_per_s = completion_tokens / (elapsed − ttft_ms/1000)`. Dividing by total elapsed under-reports rate on long prompts, because prompt-eval time (everything before the first token) leaks into the denominator. Separating the two matches what the user actually perceives: "how long until I see text" vs. "how fast is it coming out now."
 
-See: `agent/loop.py:_run_tools_parallel` (callbacks + args threading), `display.py` (renderers), `main.py:on_tool_start` / `on_tool_end` / `_build_prompt`
+See: `agent/loop.py:_run_tools_parallel` (callbacks + args threading), `display.py:on_tool_start` / `on_tool_end` (renderers), `repl/ui.py:build_prompt`
 
 ---
 
@@ -726,7 +726,7 @@ See: https://magazine.sebastianraschka.com/p/components-of-a-coding-agent
 
 `/compact` fills the other half: **user-initiated** compaction, regardless of pressure. Before a big operation ("read five files and refactor"), the user can reset the transcript first, so the interesting work starts from a small prompt instead of inheriting the previous session's ceremony.
 
-Shape (`agent/context.py:compact_history` + `main.py:cmd_compact`):
+Shape (`agent/context.py:compact_history` + `repl/commands.py:cmd_compact`):
 
 1. Keep the last 2 user/assistant pairs — those carry the current intent.
 2. Summarize everything before that through the same `summarize_dropped` path used by auto-trim.
@@ -742,7 +742,7 @@ Three design choices worth naming:
 
 Claude Code's `/compact` does something richer: it can take a target instruction ("focus on the auth refactor") that biases the summary. Mia's version is parameterless. Easy upgrade later: pass the user's arg string into `summarize_dropped` as an extra system turn.
 
-See: `agent/context.py:compact_history`, `main.py:cmd_compact`
+See: `agent/context.py:compact_history`, `repl/commands.py:cmd_compact`
 
 ---
 
@@ -766,7 +766,7 @@ The subtle correctness point: **`/clear` must also wipe `snapshots`**. Otherwise
 
 Why this is different from a generic undo: we're not trying to rewind *all* state (file contents on disk, tool effects) — only conversation state. A rewound harness doesn't un-edit files it edited; the user has git for that. The feature is specifically "conversation-level undo," which maps cleanly to a snapshot of `history` because that's the only mutable conversation surface.
 
-See: `main.py:cmd_rewind`, `main.py` REPL loop (snapshot push), `main.py:cmd_clear`
+See: `repl/commands.py:cmd_rewind`, `main.py` REPL loop (snapshot push), `repl/commands.py:cmd_clear`
 
 ---
 
@@ -826,7 +826,7 @@ The "narrow is better" argument from the top of this section flips at the schema
 
 Put another way: **tools are subscriptions, not one-time purchases.** Treat the schema list like a feature-flag budget. The right shape is usually 8–12 high-value tools plus `bash` as the escape hatch — not a sprawling client library.
 
-See: `tools/git.py`, `main.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
+See: `tools/git.py`, `repl/tool_registry.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
 
 ---
 
@@ -875,7 +875,7 @@ The broader lesson is the split itself. Every harness eventually hits this quest
 
 Concept-wise this is the same pattern as §22 (control plane vs data plane): there's a layer that mutates without involving the model, and the model just reads current values each turn. Slash commands edit it, tools read it. The model is always downstream.
 
-See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
+See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `repl/commands.py:cmd_model`
 
 ---
 
