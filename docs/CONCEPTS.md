@@ -72,6 +72,9 @@ Running notes on every concept introduced while building this harness. Read top-
 **Maturity — scaling the codebase**
 38. [Typed state — TypedDict as a type-checker-only contract](#38-typed-state--typeddict-as-a-type-checker-only-contract)
 39. [Module boundaries — when the monolith stops teaching](#39-module-boundaries--when-the-monolith-stops-teaching)
+
+**TUI**
+42. [Pinned prompt — swapping readline + rich.Live for prompt_toolkit](#42-pinned-prompt--swapping-readline--richlive-for-prompt_toolkit)
 40. [Testing the loop — Protocol substitution via a scripted provider](#40-testing-the-loop--protocol-substitution-via-a-scripted-provider)
 
 **Security**
@@ -169,6 +172,8 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 See: `agent/status.py:log_response`
 
 ## 10. Spinner feedback during blocking calls
+
+> **Superseded by §42.** The `rich.console.Console.status()` spinner was replaced with scrollback log lines when the TUI moved to `prompt_toolkit`. Animated regions fight the pinned prompt. The section below is kept for history because the lifecycle discipline it taught (stop the spinner before any user input) still applies in spirit.
 
 `ollama.chat` is synchronous and can sit for 5-30s on a tool-heavy turn. Without feedback the terminal looks dead. `rich.console.Console.status()` opens a context manager that shows a spinner with a live-updating text line, refreshed in a background thread while the main thread blocks on the model.
 
@@ -388,6 +393,8 @@ See: `tools/harness.py`, `main.py:make_execute_tool`
 
 ## 24. Rendered markdown output — streaming a Live canvas
 
+> **Superseded by §42.** `rich.live.Live` was removed when the TUI moved to `prompt_toolkit`; Live's in-place cursor manipulation is fundamentally incompatible with `patch_stdout`. Streaming reverted to `console.print(chunk, end="")` — plain text, no mid-stream markdown formatting. Section kept for the record of what was tried and why it's gone.
+
 The streaming loop used to `console.print(chunk, end="")` each token as raw text. Works, but the model's markdown (lists, code fences, tables) arrives as literal asterisks and backticks instead of formatted output.
 
 The swap: `rich.live.Live(Markdown(content))`. On first content, open a Live region; each chunk appends to `content_parts` and calls `live.update(Markdown("".join(content_parts)))`; on end (or interrupt), `live.stop()` freezes the final render in place. Uses `try/finally` so `stop()` fires on KeyboardInterrupt too — otherwise the terminal is left in Live's cursor-hiding state.
@@ -430,7 +437,15 @@ See: `agent/loop.py:_run_tools_parallel`
 
 Two small persistence features in the same section because they're two sides of the same coin: state the harness should remember across restarts.
 
-**Session history** (`~/.mia_session.json`): every conversation turn that completes cleanly gets written back via `atexit`. On startup, `main.py` loads it into `state["history"]` and prints `↳ resumed session: N turn(s) restored`. `/clear` also wipes the file — otherwise "clear history" would be a lie that reappeared on next launch. Writes are atomic via `tmp + os.replace` so a crash mid-write doesn't leave a truncated JSON file that the next startup can't parse.
+**Session history** (`~/.mia_session.json`): on exit the conversation transcript is written back via `atexit`. `/clear` wipes the file — otherwise "clear history" would be a lie that reappeared on next launch. Writes are atomic via `tmp + os.replace` so a crash mid-write doesn't leave a truncated JSON file that the next startup can't parse.
+
+**Persistence is fully opt-in** (via `python main.py --resume`). The earlier design auto-loaded the prior session on every launch, mirroring Claude Code's default. That's the right call on a frontier model with a 200k context window, but the wrong call for Mia's target runtime — a 7B local model with a 4k window. A restored 3-turn conversation can land startup at 60%+ context usage, which makes a weak model measurably slower and dumber before the user has typed anything. And unlike Claude Code, where you're likely mid-debug on a deep problem worth continuing, Mia sessions tend to be short one-offs where continuity matters less than a fresh cheap turn.
+
+The design question during the flip was whether `--resume` should gate only load, or both load *and* save. The naive plan was "gate load, keep save unconditional — that way --resume always has something to load next time." The bug this hides: a forgotten `--resume` flag on a fresh launch will still save on exit, silently overwriting the session you wanted to keep. The hint "re-launch with --resume to load" becomes a lie because by the time you do, the data's already gone.
+
+Fix: `--resume` gates both ends. Without it, we neither load nor save. The cost is that first-ever session capture also requires `--resume` (somewhat unintuitive), but the benefit — no silent data loss from flag amnesia — is worth more. The startup hint `↳ prior session on disk · re-launch with --resume to load (this session won't be saved)` makes the tradeoff legible.
+
+The broader lesson: **defaults should track the target runtime's constraints, not the reference implementation's conventions.** And when you flip a default, the asymmetric split ("opt in to load but still save") is almost always a trap — make the whole feature opt-in or opt-out together, not half-and-half.
 
 **`CLAUDE.md` injection**: if the cwd contains a `CLAUDE.md`, `agent/system_prompt.py:build_system_prompt` appends its contents to the system prompt every turn. Re-read each turn so edits take effect without restarting the REPL — a single `Path.read_text()` against a ~5KB file is free compared to an LLM call.
 
@@ -442,7 +457,7 @@ The subtle design question: *when* to read CLAUDE.md. Options:
 
 And the subtle correctness question: should the saved session include *tool* messages too? No — we only save `history`, which (by `run_agent`'s discipline, see §21) contains only completed user/assistant turns. Tool round-trips are intermediate work, not conversation, and restoring half a tool chain into a new session would confuse the model.
 
-See: `main.py:_load_session`, `main.py:_save_session`, `agent/system_prompt.py:build_system_prompt`
+See: `repl/persistence.py:load_session`, `repl/persistence.py:save_session`, `repl/persistence.py:has_saved_session`, `main.py:_parse_args`, `agent/system_prompt.py:build_system_prompt`
 
 ## 27. Plan mode — cheap safety via prompt + tool gate
 
@@ -896,6 +911,56 @@ If real isolation matters, run Mia inside a Docker container with a read-only mo
 The broader pedagogy: **security in an agent harness is layered by attack class, not by "make it safe."** Each layer narrows a specific attack family; none of them is sufficient alone. The permission gate blocks state mutation; path scoping blocks exfiltration scope; injection annotation blocks the most common hijack prompts. They stack. The stack has holes. Know where the holes are before you claim coverage.
 
 See: `security.py`, `agent/loop.py` (scan applied before `truncate_tool_result`), `tools/files.py` + `tools/search.py` (cwd guards at tool entry), `permissions.py` (the primary layer this is defense-in-depth on top of)
+
+---
+
+## 42. Pinned prompt — swapping readline + rich.Live for prompt_toolkit
+
+For most of its life Mia's REPL used `rich.Console.input()` (readline under the hood) for user input and `rich.live.Live(Markdown(...))` for streaming. Both write at the current cursor. That means as the model streams, the prompt scrolls off the top; the next turn's prompt reappears at wherever the last line ended up. Nothing stays pinned. The shell is disorienting because there's no fixed element for the eye to hold.
+
+The fix is an input engine that owns a region of the terminal. `prompt_toolkit` has exactly this: a `PromptSession` whose input line can be *pinned to the bottom* while the rest of the program's output scrolls above it, via the `patch_stdout` context manager. The layout becomes:
+
+```
+[... scrollback: banner, resumed-session notice, turn 1, turn 2 ...]
+[... the most recent `Thinking...`, `Running tools (2/3)`, response text ...]
+────────────────────────────────────
+You [feat/branch] ›  █           ← pinned, always visible
+```
+
+### What actually changed
+
+1. **Input engine**. Two `console.input()` sites became a `PromptSession.prompt()` in `main.py` and a one-shot `prompt_toolkit.shortcuts.prompt()` in `permissions.py`. The readline-based completer in `repl/ui.py` is now a `SlashCompleter(Completer)` subclass; the completion trigger is `document.text_before_cursor.startswith("/")` instead of `readline.get_line_buffer()`. Input history moved from `~/.mia_history` (readline format) to `~/.mia_input_history` (prompt_toolkit `FileHistory` format) — formats aren't compatible, migration wasn't worth the code.
+
+2. **Prompt pinning**. The main `while True:` loop is wrapped in `with patch_stdout(raw=True):`. Under this, every `sys.stdout` write (including Rich's) goes through a proxy that buffers output and emits it *above* the prompt line. Rich needs `Console(force_terminal=True)` because the patched stdout isn't a TTY — without it Rich auto-strips colors.
+
+3. **Streaming reverted to plain chunks**. `rich.live.Live` was removed. Live drives the terminal cursor (writes `\x1b[nA` etc. to redraw its region); `patch_stdout` also drives the terminal; they fight. There's no known coexistence pattern — every working example in the wild (ptpython, ipython-like shells) either streams plain or uses a full `prompt_toolkit.Application` with a managed log region. The trade: streaming tokens arrive as raw text (`**hello**` instead of **hello**), no mid-stream markdown rendering. For a pedagogical harness this is acceptable; for a polished product you'd either render-only-at-end or commit to an `Application`.
+
+4. **Spinner → scrollback log lines**. `rich.Status` has the same patch-stdout conflict as `Live`. Instead of replacing it with an animated `bottom_toolbar`, we just `console.print("[dim]· Thinking…[/dim]")` at turn start and `console.print(status_line("Running tools", progress=(2,3)))` after each tool. Lines scroll up with everything else. Loses animation; gains honesty (no fake liveness, no hidden fights with the prompt). The `status_line()` formatter stayed because it's still useful — only the `Status` object it used to drive is gone.
+
+5. **Signature cleanup**. `run_agent`, `_run_tools_parallel`, and `check_permission` all dropped their `status=` parameter. The per-call `stop/start` dance around user prompts — which §10 and §16 spent paragraphs describing — is gone, because there's no spinner to stop. One class of bug (spinner corrupting input) deleted by construction.
+
+### The tradeoffs, stated honestly
+
+- **Gained**: a visual anchor at the bottom of the terminal, tab completion with typeahead, real Up/Down history without readline quirks, cleaner function signatures (five fewer `status` kwargs threaded through the loop), and the spinner-vs-input corruption class of bug gone by construction.
+- **Lost**: in-place markdown rendering during streaming. Responses now appear as plain characters until a new turn makes them scroll up under the prompt. The fallback is: either accept plain streaming (chosen), or commit to a full `prompt_toolkit.Application` with a managed log region (textual-lite, overkill here), or render-only-at-end (loses the streaming-feels-alive property).
+- **Lost**: the `rich.Status` spinner's animation. Replaced with append-only log lines. Honest but less "alive."
+
+The broader lesson: **terminal UI is a stack of conventions, not a set of independent features.** You can't freely mix a fixed-region input library with a library that assumes it owns the cursor. When they conflict, one has to own the terminal. We picked `prompt_toolkit` because pinning the prompt was the goal the user actually named, and everything else had to compose around that decision. The spinner and the live markdown renderer are the collateral.
+
+### Smoke matrix (not unit-testable — terminal behavior)
+
+| # | Action | Expected |
+|---|---|---|
+| 1 | `/he<Tab>` | expands to `/help` |
+| 2 | `Up` / `Down` at empty prompt | cycles prior inputs from `~/.mia_input_history` |
+| 3 | `Ctrl+C` at empty prompt | clears line, stays in REPL |
+| 4 | `Ctrl+C` during streaming | `↳ aborted — history unchanged` printed, back to prompt |
+| 5 | `Ctrl+D` at empty prompt | clean exit |
+| 6 | Trigger `write_file` tool | permission prompt renders, `y` accepts, `n` denies |
+| 7 | Multi-turn session | prior turns scroll above, prompt pinned at bottom |
+| 8 | Terminal resize mid-turn | prompt reflows, scrollback intact |
+
+See: `repl/ui.py:build_session`, `repl/ui.py:SlashCompleter`, `main.py` (`with patch_stdout`), `agent/loop.py` (streaming block, no Live), `permissions.py` (one-shot `pt_prompt`)
 
 ---
 

@@ -1,38 +1,19 @@
-"""Session + input-history persistence. Two user-dir files:
+"""Session persistence for the conversation transcript. Input history
+(arrow-key recall) now lives in `repl/ui.py` under prompt_toolkit's
+`FileHistory`, so this module only concerns itself with one file:
 
 - `~/.mia_session.json` holds the conversation transcript (user/assistant
   pairs only, never tool messages per §3). Atomic write via temp + rename.
-- `~/.mia_history` holds the readline input history so arrow-key recall
-  survives restarts.
 
 All operations fail silently (return / pass) on I/O errors — losing a
 session file is annoying, not fatal, and the REPL must still boot."""
-import atexit
 import json
 import os
-import readline
 
 from repl.console import console
 from repl.state import State
 
-HISTORY_FILE = os.path.expanduser("~/.mia_history")
 SESSION_FILE = os.path.expanduser("~/.mia_session.json")
-
-
-def load_input_history() -> None:
-    try:
-        readline.read_history_file(HISTORY_FILE)
-    except FileNotFoundError:
-        pass
-    readline.set_history_length(1000)
-    atexit.register(save_input_history)
-
-
-def save_input_history() -> None:
-    try:
-        readline.write_history_file(HISTORY_FILE)
-    except OSError:
-        pass
 
 
 def load_session(state: State) -> None:
@@ -77,3 +58,15 @@ def wipe_session() -> None:
         os.remove(SESSION_FILE)
     except FileNotFoundError:
         pass
+
+
+def has_saved_session() -> bool:
+    """True if a session file exists with at least one turn. Used to hint
+    the user (when they launched without --resume) that prior work is on
+    disk but won't be loaded unless they opt in."""
+    try:
+        with open(SESSION_FILE) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, list) and len(data) > 0
