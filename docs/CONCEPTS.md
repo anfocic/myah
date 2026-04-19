@@ -138,6 +138,8 @@ Two loops stacked. The **inner loop** (blue) runs zero-to-many times within one 
 
 See: `agent/loop.py:run_agent`
 
+---
+
 # 2. Tool calling (OpenAI function-calling format)
 
 Tools are declared to the model as JSON schemas:
@@ -157,6 +159,8 @@ The model returns `tool_calls[*].function.name` + `arguments`. The harness is re
 
 Ollama, OpenAI, and Anthropic all use slight variants of this same schema shape.
 
+---
+
 # 3. History vs messages
 
 Two lists, easily confused:
@@ -165,6 +169,8 @@ Two lists, easily confused:
 - **`messages`**: built fresh each `run_agent` call = `[system] + history + [new_user]`. Grows *within* the turn as tool calls + tool results are appended.
 
 Tool messages are deliberately **not** kept in history — they're intermediate work, not conversation.
+
+---
 
 # 4. Context window
 
@@ -185,6 +191,8 @@ The model has a fixed token budget (`NUM_CTX`, default 4096). Everything you sen
 
 Widths are roughly proportional to real token counts. `system` and `schemas` are tiny fixed overhead; `history` and `tool results` are what actually eat the budget. A single big tool result plus a mid-length history can overflow `NUM_CTX` before the model even finishes the turn — that's the pressure §6 and §20 exist to manage.
 
+---
+
 # 5. Token counting: estimate vs real
 
 Two ways to measure:
@@ -196,11 +204,15 @@ We use real when available, fall back to the estimate (e.g. for pre-call trim de
 
 See: `agent/tokens.py:estimate_tokens`
 
+---
+
 # 6. Context pressure → trim
 
 When `ctx_used > 80% * NUM_CTX`, drop oldest user/assistant pairs from history until back under 50%. Two thresholds (`high` / `target`) create hysteresis — you don't trim-one-pair every single turn.
 
 See: `agent/context.py:trim_history`
+
+---
 
 # 7. Summarize dropped turns
 
@@ -210,11 +222,15 @@ Cost: one extra model call per trim event. Benefit: you keep the gist of old con
 
 See: `agent/context.py:summarize_dropped`
 
+---
+
 # 8. TUI with `rich`
 
 `rich.Console` gives colored output, BBCode-style markup (`[bold cyan]...[/bold cyan]`), and styled input prompts. Zero terminal escape-code wrangling.
 
 See: `main.py:ctx_tag`
+
+---
 
 # 9. Debug logging
 
@@ -229,6 +245,8 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 
 See: `agent/status.py:log_response`
 
+---
+
 # 10. Spinner feedback during blocking calls
 
 > **Superseded by §42.** The `rich.console.Console.status()` spinner was replaced with scrollback log lines when the TUI moved to `prompt_toolkit`. Animated regions fight the pinned prompt. The section below is kept for history because the lifecycle discipline it taught (stop the spinner before any user input) still applies in spirit.
@@ -239,6 +257,8 @@ Pattern: pass the `status` handle into the agent loop so it can report *what* it
 
 See: `agent/status.py:status_line`, `main.py` REPL loop
 
+---
+
 # 11. Models don't know what they are
 
 Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm built by Anthropic" (or OpenAI, depending on which corpus leaked hardest into its training data). The model has no introspection — it just pattern-matches on text it's seen.
@@ -246,6 +266,8 @@ Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm b
 **Identity lives in the system prompt.** If you want the model to correctly say "I'm Mia, running on qwen2.5 via Ollama," you have to tell it that, and you usually have to explicitly negate the false answers ("You were NOT built by OpenAI or Anthropic") because the training-data priors are strong.
 
 See: system prompt in `agent/loop.py:run_agent`
+
+---
 
 # 12. Streaming responses + TTFT
 
@@ -263,6 +285,8 @@ Implementation notes:
 
 See: `agent/loop.py:run_agent`
 
+---
+
 # 13. Small models hallucinate library APIs
 
 Asked qwen2.5:7b to critique this project. It suggested "improvements" using:
@@ -276,6 +300,8 @@ The model sounded confident and structurally coherent, but the code was wrong in
 **Lesson:** small local models are fine as the *subject* of a harness — they'll happily play agent, call tools, and let you build around them. They are **not** a reliable *code reviewer* for the stack they run on. Their training data is dominated by OpenAI's API shape, so anything provider-specific gets confabulated.
 
 Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advice about the harness itself.
+
+---
 
 # 14. Surgical editing vs full-file writes
 
@@ -292,6 +318,8 @@ This is why Claude Code's `Edit` tool looks the way it does; we copied the shape
 
 See: `tools/files.py:edit_file`
 
+---
+
 # 15. Regex search as a tool
 
 `grep(pattern, path, glob, output_mode)` mirrors ripgrep's core shape but in stdlib `re`. Two output modes:
@@ -304,6 +332,8 @@ Defaulting to files-only is a deliberate context-budget choice: the model can fo
 Other sanity caps: skip files > 1 MB, skip binaries (anything that fails UTF-8 decode), skip dotdirs / `venv` / `__pycache__` / `node_modules` / `logs`. Hard cap at 50 results with a `... (truncated)` marker. These exist not for correctness but for **context-window discipline** — a single unbounded tool result can destroy a turn.
 
 See: `tools/search.py:grep`
+
+---
 
 # 16. Tool permissioning / the trust model
 
@@ -346,6 +376,8 @@ Two broader lessons:
 
 See: `tools/files.py:read_file`
 
+---
+
 # 18. Confident-plausible regressions (§13, second flavor)
 
 Asked qwen2.5:7b to review `tools/search.py`. The review itself was generic ("add docstrings", "improve error handling", "follow PEP 8") — no actual bugs caught. Then it offered a "refined" rewrite. Nine concrete regressions in ~50 lines:
@@ -371,6 +403,8 @@ Two lessons:
 
 See: also §13. Review transcript archived in `logs/agent.jsonl`.
 
+---
+
 # 19. Shell access + why the permission layer matters here
 
 `bash(command, cwd, timeout)` is the first tool where the blast radius escapes the process. `write_file` can clobber a file you own; `bash` can `rm -rf`, `curl | sh`, or `git push --force`. Claude Code's entire reputation depends on the user-approval prompt that appears before every command.
@@ -387,6 +421,8 @@ Exit codes, stdout, and stderr are all surfaced separately: the model sees `[std
 
 See: `tools/bash.py`, `permissions.py:NEVER_TRUNCATE_KEYS`
 
+---
+
 # 20. Generic tool-result cap (defence in depth)
 
 Per-tool caps (`read_file`'s line limit, `grep`'s 50-result ceiling, `bash`'s 50KB stream cap) all assumed each tool author would remember to bound its own output. Works until someone adds a tool and forgets — one `curl` wrapper returning a 5MB JSON blob lands straight in `messages` and the next `ollama.chat` silently drops half the prompt.
@@ -396,6 +432,8 @@ Per-tool caps (`read_file`'s line limit, `grep`'s 50-result ceiling, `bash`'s 50
 Pedagogy: per-tool caps are a *contract* with tool authors; the harness cap is an *invariant*. Contracts get forgotten; invariants don't. Two layers, so one forgotten ceiling doesn't blow the ctx window.
 
 See: `agent/tokens.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
+
+---
 
 # 21. Interrupts and input history — cheap REPL ergonomics
 
@@ -414,6 +452,8 @@ The surprise: the *import* is the feature. Python's `input()` silently upgrades 
 
 See: `agent/loop.py:run_agent` (try/except block), `main.py:_load_input_history`
 
+---
+
 # 22. Control plane vs data plane — slash commands
 
 Three inputs hit the REPL: `hello`, `/clear`, `exit`. Two of them never reach the model. That split — what the harness handles vs. what the LLM sees — is the **control plane / data plane** split, and it's one of the most important structural ideas in an agent harness.
@@ -430,6 +470,8 @@ Two design choices worth naming:
 2. **Slash ≠ tool.** The model could call a hypothetical `clear_history` tool and get the same effect, but that would be bad design: `/clear` is a *user* action, not a *reasoning* action. Separating them means the model can't erase context on itself mid-plan, and the user never has to wait for a model round-trip to reset. The tool layer is for things the model needs to reason *with*; the slash layer is for things the user does *to* the harness. (Separately, a `harness_info` tool for mid-turn introspection is still useful — that's data-plane. Different job.)
 
 See: `main.py:SLASH_COMMANDS`, `main.py:handle_slash`
+
+---
 
 # 23. Harness introspection — tool closes over state
 
@@ -449,6 +491,8 @@ The caveat written into the output string: `ctx_used` is the **previous turn's s
 
 See: `tools/harness.py`, `main.py:make_execute_tool`
 
+---
+
 # 24. Rendered markdown output — streaming a Live canvas
 
 > **Superseded by §42.** `rich.live.Live` was removed when the TUI moved to `prompt_toolkit`; Live's in-place cursor manipulation is fundamentally incompatible with `patch_stdout`. Streaming reverted to `console.print(chunk, end="")` — plain text, no mid-stream markdown formatting. Section kept for the record of what was tried and why it's gone.
@@ -462,6 +506,8 @@ The trade-off written into the design: **markdown is a block-level format, strea
 Why not render ONLY at the end? Because token-by-token arrival is the thing that makes an LLM feel alive. Users tolerate a little visual jitter in exchange for knowing the model is still thinking. Claude Code does the same thing.
 
 See: `agent/loop.py:run_agent` (Live/Markdown block)
+
+---
 
 # 25. Parallel tool execution — serial gate, parallel body
 
@@ -491,6 +537,8 @@ Speedup is real: three 300ms sleeps serial = 0.9s, parallel = 0.3s (verified).
 
 See: `agent/loop.py:_run_tools_parallel`
 
+---
+
 # 26. Session persistence + project context (CLAUDE.md)
 
 Two small persistence features in the same section because they're two sides of the same coin: state the harness should remember across restarts.
@@ -517,6 +565,8 @@ And the subtle correctness question: should the saved session include *tool* mes
 
 See: `repl/persistence.py:load_session`, `repl/persistence.py:save_session`, `repl/persistence.py:has_saved_session`, `main.py:_parse_args`, `agent/system_prompt.py:build_system_prompt`
 
+---
+
 # 27. Plan mode — cheap safety via prompt + tool gate
 
 `/plan` toggles a state flag. When on, two things happen:
@@ -531,6 +581,8 @@ Claude Code does this with a dedicated `ExitPlanMode` tool that's the *only* cal
 Surfaced in `/context` and the `harness_info` tool so the model can detect its own mode when asked ("am I in plan mode?").
 
 See: `agent/system_prompt.py:build_system_prompt` (plan block), `agent/loop.py:_run_tools_parallel` (short-circuit), `main.py:cmd_plan`
+
+---
 
 # 28. Env injection — zero-tool-call context
 
@@ -554,6 +606,8 @@ The design trade is **cost vs. latency**. Always-fresh env costs ~100 tokens eve
 A subtle correctness choice: when `git` fails (not a repo, command missing, timeout), `_git()` returns `None` and `_env_block` prints `git: (not a repository)` rather than crashing or silently omitting the field. The model prefers an explicit "no" to a missing field, because a missing field reads as "unknown" — and the model will then waste a tool call verifying.
 
 See: `agent/system_prompt.py:_env_block`, `agent/system_prompt.py:_git`
+
+---
 
 # 29. Plan mode revisited — read/write split
 
@@ -580,6 +634,8 @@ The principle: **planning is an investigation phase, not a silence phase**. A pl
 Allow-list over deny-list because new tools default to blocked. A future `delete_file` added to the schema is automatically gated without needing to update `plan_mode` logic.
 
 See: `agent/__init__.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
+
+---
 
 # 30. Multi-provider abstraction — two protocol families, one contract
 
@@ -611,6 +667,8 @@ The pedagogy is worth naming: **an abstraction isn't proven by wrapping one thin
 
 See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent/loop.py:run_agent` (provider lookup)
 
+---
+
 # 31. Display layer — callbacks, not prints
 
 A version of `run_agent` that `console.print`s tool events directly couples the loop to `rich`, to the REPL's console instance, and to today's output format. Swap `rich` for `prompt_toolkit` later and every line has to move. Add structured logging and the console prints become double-output. The fix is the same pattern `permission_check` already uses: **optional callback kwargs the caller supplies, no-op defaults**.
@@ -633,6 +691,8 @@ Four design choices worth naming:
 A related streaming note: **TTFT and generation time are distinct.** `tok_per_s = completion_tokens / (elapsed − ttft_ms/1000)`. Dividing by total elapsed under-reports rate on long prompts, because prompt-eval time (everything before the first token) leaks into the denominator. Separating the two matches what the user actually perceives: "how long until I see text" vs. "how fast is it coming out now."
 
 See: `agent/loop.py:_run_tools_parallel` (callbacks + args threading), `display.py` (renderers), `main.py:on_tool_start` / `on_tool_end` / `_build_prompt`
+
+---
 
 # 32. Raschka's 6 components as a harness audit
 
@@ -658,6 +718,8 @@ Worth re-running every few PRs. If a box that used to say "have" has decayed int
 
 See: https://magazine.sebastianraschka.com/p/components-of-a-coding-agent
 
+---
+
 # 33. Manual compact — proactive context control
 
 §6 and §7 together give a *reactive* compactor: when `ctx_used > 80% * NUM_CTX`, trim oldest turns and summarize them back in. That works, but it's always one step behind — by the time the trim fires, the user has already paid for a bloated prompt.
@@ -682,6 +744,8 @@ Claude Code's `/compact` does something richer: it can take a target instruction
 
 See: `agent/context.py:compact_history`, `main.py:cmd_compact`
 
+---
+
 # 34. Rewind — snapshot-based undo
 
 `/retry` (§22's slash layer) already pops the last user/assistant pair and resubmits the prompt. Useful when the model flubbed, but narrow: it only handles "last turn, try again" and it always re-runs. `/rewind` is the more general move — **go back N turns without resubmitting**, because the user wants a different direction, not a fresh sample of the same direction.
@@ -704,6 +768,8 @@ Why this is different from a generic undo: we're not trying to rewind *all* stat
 
 See: `main.py:cmd_rewind`, `main.py` REPL loop (snapshot push), `main.py:cmd_clear`
 
+---
+
 # 35. Microcompact — eliding stale tool results mid-turn
 
 §6/§7 and §33 all operate on `history` — the user/assistant transcript that lives between turns. None of them can touch tool results, because per §3 tool messages are **deliberately not kept in history**. They live only inside the `messages` list that `run_agent` builds fresh each turn.
@@ -723,6 +789,8 @@ Three design choices:
 The pedagogy is the part worth keeping: **context management isn't a single mechanism; it's a layered one.** Per-tool caps handle "one bad tool call." `truncate_tool_result` handles "the tool author forgot a cap." `trim_history` handles "the conversation got long." `microcompact` handles "the *single turn* got long." Each layer catches a different failure, and you notice you need the next layer only when the previous one starts to leak.
 
 See: `agent/context.py:microcompact`, `agent/loop.py:run_agent` (top-of-loop call), `config.py` constants nearby
+
+---
 
 # 36. Narrow named tools > generic shell (for small models)
 
@@ -759,6 +827,8 @@ The "narrow is better" argument from the top of this section flips at the schema
 Put another way: **tools are subscriptions, not one-time purchases.** Treat the schema list like a feature-flag budget. The right shape is usually 8–12 high-value tools plus `bash` as the escape hatch — not a sprawling client library.
 
 See: `tools/git.py`, `main.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
+
+---
 
 # 37. Startup constants vs runtime state — model switching
 
@@ -807,6 +877,8 @@ Concept-wise this is the same pattern as §22 (control plane vs data plane): the
 
 See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `main.py:cmd_model`
 
+---
+
 # 38. Typed state — TypedDict as a type-checker-only contract
 
 The REPL's shared state started as a plain `dict` — `state["history"]`, `state["plan_mode"]`, `state["snapshots"]`. Worked, scaled, cost nothing. Until you type `state["plaan_mode"]` at 2am and the model quietly ignores your toggle for three turns because Python's bare-dict access silently returns `None` on an unknown key.
@@ -837,6 +909,8 @@ Two design choices worth naming:
 The broader pedagogy: **when you reach for a dataclass, ask whether a TypedDict does the job instead.** Dataclasses earn their keep when you need methods, validation, or frozen instances. For "a bag of string keys the editor should lint," a TypedDict is cheaper and keeps the JSON story trivial.
 
 See: `repl/state.py` (State TypedDict + `new_state()` factory), `tools/harness.py` (widened `Mapping[str, Any]` reader signature)
+
+---
 
 # 39. Module boundaries — when the monolith stops teaching
 
@@ -870,6 +944,8 @@ The trap to avoid: **splitting too early.** A new harness should stay monolithic
 A useful tell: **if re-exports in `__init__.py` keep every caller unchanged, the split is probably right.** If callers start using `agent.loop.run_agent` instead of `agent.run_agent`, you've either missed a re-export or the seam you picked isn't the real one.
 
 See: `agent/__init__.py` (re-export surface + top-level `READ_ONLY_TOOLS`), `repl/__init__.py`, `repl/console.py` (shared singleton), `main.py` (thin composition layer)
+
+---
 
 # 40. Testing the loop — Protocol substitution via a scripted provider
 
@@ -911,6 +987,8 @@ Four design choices worth naming:
 The broader pedagogy is about the Protocol abstraction **doing work for you** that you didn't design it for. `Provider` was split out to support Ollama and OpenAI-compat. The happy side effect is that any test can substitute any implementation — the abstraction pays dividends whenever substitution is useful, not just for the cases you originally had in mind.
 
 See: `tests/test_integration.py`, `providers/base.py:Provider` (the Protocol being satisfied), `providers/__init__.py:set_active_provider`
+
+---
 
 # 41. Prompt injection defenses — two layers, neither a sandbox
 
