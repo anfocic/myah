@@ -12,12 +12,14 @@ narrow named tools over generic shell (for small models), which is why
 `git_checkout` exists even though `bash` could do the same job."""
 from typing import Any
 
+from repl.console import console
 from repl.state import State
 from tools.bash import bash as run_bash
 from tools.files import edit_file, read_file, write_file
 from tools.git import git_checkout
 from tools.harness import harness_info
 from tools.search import glob, grep
+from tools.subagent import spawn_subagent
 from tools.utils import get_current_time
 
 # Tool schemas are nested dicts (OpenAI function-calling format). The
@@ -202,15 +204,51 @@ tools: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_subagent",
+            "description": (
+                "Delegate a self-contained investigative subtask to a subagent "
+                "running with a fresh context window. The subagent has the same "
+                "tools you do (except spawn_subagent itself). You'll receive its "
+                "final answer as a single tool result. Good for: 'find every caller "
+                "of X and summarize', 'read these three files and report their "
+                "relationship', 'grep the repo for TODOs in auth code'. Bad for: "
+                "open-ended conversation, questions that need clarification, or "
+                "tasks that would trivially fit in one or two of your own tool calls."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "The task for the subagent, written as a self-contained "
+                            "instruction. Include any file paths, patterns, or "
+                            "constraints the subagent needs — it starts with empty "
+                            "history and cannot see your prior conversation."
+                        ),
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+    },
 ]
 
 TOOL_NAMES = [t["function"]["name"] for t in tools]
 
 
-def make_execute_tool(state: State):
+def make_execute_tool(state: State, permission_check=None):
     """Factory so the harness_info tool can close over the live REPL state
     (ctx_used, history). Passing state through run_agent would leak REPL
-    internals into its signature; a closure keeps agent.py state-ignorant."""
+    internals into its signature; a closure keeps agent.py state-ignorant.
+
+    `permission_check` is captured here too so the `spawn_subagent` branch
+    can thread it into the child `run_agent`. The subagent thereby
+    inherits the same permission gate — the user still approves destructive
+    tool calls the subagent attempts, just like for the parent."""
 
     def execute_tool(name, args):
         # Args come from the model, which occasionally omits required keys.
@@ -253,6 +291,15 @@ def make_execute_tool(state: State):
                 return harness_info(state, TOOL_NAMES)
             elif name == "git_checkout":
                 return git_checkout(args["branch"])
+            elif name == "spawn_subagent":
+                return spawn_subagent(
+                    task=args["task"],
+                    tools=tools,
+                    execute_tool=execute_tool,
+                    permission_check=permission_check,
+                    console=console,
+                    plan_mode=bool(state.get("plan_mode", False)),
+                )
             return "Tool not found"
         except KeyError as e:
             return f"Missing required argument: {e}"

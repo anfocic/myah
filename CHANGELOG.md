@@ -10,6 +10,12 @@ entries are grouped by merged PR date, not SemVer releases.
 
 ### Added
 
+- **Subagents** (`spawn_subagent` tool) — delegate a self-contained
+  subtask to a nested `run_agent` with isolated history. The subagent
+  shares the parent's `execute_tool` and permission gate but runs with
+  a fresh context window, so its tool chatter doesn't eat the parent's
+  budget. One level deep (schema filter + module-level depth counter).
+  CONCEPTS §43 and `tests/test_subagent.py` cover the design.
 - **Anthropic provider — native adapter** (`providers/anthropic_adapter.py`).
   Messages API with event-tagged SSE parsing, typed content blocks for
   tool calls, system-prompt lifting, parallel tool-result coalescing,
