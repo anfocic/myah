@@ -11,10 +11,34 @@ import os
 
 from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 
+# Default base URLs for the hosted providers. Overridable via env so
+# proxies (LiteLLM, OpenRouter pretending to be OpenAI, an Anthropic-on-
+# Bedrock gateway) can redirect traffic without a code change.
+_OPENAI_BASE_URL = "https://api.openai.com/v1"
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+
+# Reasonable defaults for `/model <provider-name>` with no model specified
+# and for the startup path when MIA_PROVIDER selects one of these without
+# a matching *_MODEL env var set.
+_DEFAULT_MODELS = {
+    "openai": "gpt-4.1-mini",
+    "anthropic": "claude-sonnet-4-6",
+    "deepseek": "deepseek-chat",
+}
+
 
 def build_provider(name: str, model: str) -> Provider:
     """Construct an adapter by provider name. Base URLs + API key still come
-    from config/env — only the model name changes per call."""
+    from config/env — only the model name changes per call.
+
+    Supported names: `ollama`, `openai-compat`, `openai`, `anthropic`,
+    `deepseek`. `openai-compat` is the generic adapter (local llama.cpp /
+    LM Studio / vLLM / OpenRouter); `openai` and `deepseek` are presets
+    that reuse the same adapter but default to the first-party hosts and
+    each provider's dedicated API-key env var. `anthropic` has its own
+    native adapter because the Messages API differs in message shape,
+    streaming events, and tool schema."""
     if name == "ollama":
         from config import OLLAMA_BASE_URL
 
@@ -33,14 +57,60 @@ def build_provider(name: str, model: str) -> Provider:
             api_key=os.environ.get("OPENAI_COMPAT_API_KEY", ""),
         )
 
+    if name == "openai":
+        # First-party OpenAI. Reuses the openai-compat adapter because the
+        # Chat Completions wire format is identical — the only difference
+        # from the generic compat path is a hardcoded base URL and a
+        # dedicated API-key env var. If/when we want Responses API or
+        # reasoning_effort plumbing, that motivates a separate adapter.
+        from .openai_compat import OpenAICompatProvider
+
+        return OpenAICompatProvider(
+            model=model,
+            base_url=os.environ.get("OPENAI_BASE_URL", _OPENAI_BASE_URL),
+            api_key=os.environ.get("OPENAI_API_KEY", ""),
+        )
+
+    if name == "anthropic":
+        from .anthropic_adapter import AnthropicProvider
+
+        return AnthropicProvider(
+            model=model,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            base_url=os.environ.get("ANTHROPIC_BASE_URL", _ANTHROPIC_BASE_URL),
+        )
+
+    if name == "deepseek":
+        # DeepSeek exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when DeepSeek-specific features (FIM, reasoning-mode toggles
+        # for `deepseek-reasoner`) need bespoke handling.
+        from .openai_compat import OpenAICompatProvider
+
+        return OpenAICompatProvider(
+            model=model,
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", _DEEPSEEK_BASE_URL),
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        )
+
     raise ValueError(
-        f"unknown provider: {name!r} (expected 'ollama' or 'openai-compat')"
+        f"unknown provider: {name!r} "
+        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek)"
     )
+
+
+SUPPORTED_PROVIDERS = frozenset(
+    {"ollama", "openai-compat", "openai", "anthropic", "deepseek"}
+)
 
 
 def get_provider() -> Provider:
     """Build the startup provider from env/config. Called once at import
-    time; after that use `get_active_provider()` to read the current one."""
+    time; after that use `get_active_provider()` to read the current one.
+
+    Each hosted provider reads a `<NAME>_MODEL` env var (e.g.
+    `OPENAI_MODEL`) for the model name, falling back to a sensible
+    default from `_DEFAULT_MODELS` if unset."""
     from config import MODEL_PROVIDER
 
     if MODEL_PROVIDER == "ollama":
@@ -51,9 +121,27 @@ def get_provider() -> Provider:
         from config import OPENAI_COMPAT_MODEL
         return build_provider("openai-compat", OPENAI_COMPAT_MODEL)
 
+    if MODEL_PROVIDER == "openai":
+        return build_provider(
+            "openai",
+            os.environ.get("OPENAI_MODEL", _DEFAULT_MODELS["openai"]),
+        )
+
+    if MODEL_PROVIDER == "anthropic":
+        return build_provider(
+            "anthropic",
+            os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODELS["anthropic"]),
+        )
+
+    if MODEL_PROVIDER == "deepseek":
+        return build_provider(
+            "deepseek",
+            os.environ.get("DEEPSEEK_MODEL", _DEFAULT_MODELS["deepseek"]),
+        )
+
     raise ValueError(
         f"unknown MODEL_PROVIDER: {MODEL_PROVIDER!r} "
-        "(expected 'ollama' or 'openai-compat')"
+        f"(expected one of: {', '.join(sorted(SUPPORTED_PROVIDERS))})"
     )
 
 
@@ -102,6 +190,7 @@ __all__ = [
     "Provider",
     "ProviderError",
     "StreamChunk",
+    "SUPPORTED_PROVIDERS",
     "ToolCall",
     "Usage",
     "build_provider",

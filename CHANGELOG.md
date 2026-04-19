@@ -10,6 +10,24 @@ entries are grouped by merged PR date, not SemVer releases.
 
 ### Added
 
+- **Anthropic provider — native adapter** (`providers/anthropic_adapter.py`).
+  Messages API with event-tagged SSE parsing, typed content blocks for
+  tool calls, system-prompt lifting, parallel tool-result coalescing,
+  and input-JSON delta buffering. `MIA_PROVIDER=anthropic` works out of
+  the box with `ANTHROPIC_API_KEY`; `/model anthropic:claude-sonnet-4-6`
+  swaps at runtime. CONCEPTS §44 covers the four wire-format divergences
+  from OpenAI.
+- **OpenAI first-party provider** as a factory preset over the existing
+  `OpenAICompatProvider`. `MIA_PROVIDER=openai` + `OPENAI_API_KEY` +
+  optional `OPENAI_MODEL` (default `gpt-4.1-mini`).
+- **DeepSeek provider** as a factory preset over the existing
+  `OpenAICompatProvider`. `MIA_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` +
+  optional `DEEPSEEK_MODEL` (default `deepseek-chat`).
+- `SUPPORTED_PROVIDERS` constant exported from `providers` so the
+  `/model` parser and tests agree on the canonical set.
+- `tests/test_anthropic_adapter.py` (12 tests covering translation +
+  SSE parsing) and `tests/test_provider_factory.py` (6 tests covering
+  preset wiring + fail-closed auth check).
 - **CONCEPTS §42** — pinned prompt: swapping readline + `rich.Live` for
   `prompt_toolkit`. Input now sticks to the bottom of the terminal while
   output scrolls above it (Claude-Code-style).
