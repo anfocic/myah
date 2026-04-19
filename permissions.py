@@ -7,6 +7,8 @@ model proposes; the human allows.
 """
 import json
 
+from prompt_toolkit.shortcuts import prompt as pt_prompt
+
 SENSITIVE_TOOLS = {"write_file", "edit_file", "bash", "git_checkout"}
 _session_allowed: set[str] = set()
 
@@ -33,29 +35,26 @@ def _render_args(args) -> str:
     return json.dumps(d, indent=2, default=str)
 
 
-def check_permission(console, status, name: str, args) -> bool:
+def check_permission(console, name: str, args) -> bool:
     """Return True if the tool may run. Prompts the user for sensitive tools.
 
-    `status` is a rich.Status; it must be stopped around the input() or the
-    spinner corrupts the prompt. `console` is a rich.Console.
-    """
+    The prompt uses `prompt_toolkit.shortcuts.prompt` directly — a one-shot
+    session that slots cleanly under `patch_stdout` because the outer
+    PromptSession has already returned control to the agent loop. No spinner
+    to stop/restart now that rich.Status is retired (§TUI refactor)."""
     if name not in SENSITIVE_TOOLS or name in _session_allowed:
         return True
-
-    if status:
-        status.stop()
 
     console.print(
         f"\n[bold yellow]Permission requested[/bold yellow] [dim]for[/dim] "
         f"[bold]{name}[/bold]"
     )
     console.print(f"[dim]{_render_args(args)}[/dim]")
-    choice = console.input(
-        "[bold]Allow?[/bold] [dim]\\[y]es / \\[n]o / \\[a]lways ›[/dim] "
-    ).strip().lower()
-
-    if status:
-        status.start()
+    try:
+        choice = pt_prompt("Allow? [y]es / [n]o / [a]lways › ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        # Treat an aborted permission prompt as a denial — safer default.
+        return False
 
     if choice.startswith("a"):
         _session_allowed.add(name)
