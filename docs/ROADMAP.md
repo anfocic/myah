@@ -33,7 +33,7 @@ Teaches how real harnesses are structured.
 | Manual compact (`/compact`) | User-initiated context reset — keep last 2 turns, summarize the rest. Complements the reactive auto-trim | Small | Shipped |
 | Rewind (`/rewind N`) | In-memory snapshot stack → pop-back undo for conversation state. Different job than `/retry` (undo, not re-run) | Small | Shipped |
 | Microcompact | Elide stale tool results mid-turn when a single turn racks up many tool calls. Intra-turn counterpart to `trim_history` | Small | Shipped |
-| Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | |
+| Subagents | Spawn a nested `run_agent` with isolated history for a delegated task. Teaches hierarchical agents | Medium | Shipped |
 | Hooks | Pre/post tool-call hooks the user can configure. Teaches extensibility | Small | |
 
 ## Tier 3 — Polish / power features
@@ -61,7 +61,7 @@ These are the things keeping Mia from feeling like a "complete" pedagogical harn
 | Observability — per-turn trace + cost | `logs/agent.jsonl` captures usage already, but there's no viewer, no cost accounting, no cross-turn diff. A `/trace` slash command or a tiny `scripts/trace-viewer.py` that replays a session with token breakdowns would teach the operational side of running an agent | Small-medium | |
 | Restore streaming markdown rendering | The prompt_toolkit refactor (§42) dropped `rich.live.Live`. Streaming is now plain text. Two ways to fix: (a) promote the REPL to a full `prompt_toolkit.Application` with a managed log region; (b) render markdown only at end-of-stream (lose the "feels alive" token trickle). Decide, document, ship. The current state is a regression | Medium-large | |
 | Diagrams in CONCEPTS.md | Zero diagrams today. At least three would pay for themselves: (1) agent loop sequence (user → build_messages → stream → if tool_calls → execute → loop → else return), (2) context lifecycle (trim → microcompact → compact → rewind), (3) control plane / data plane split. Use mermaid blocks so they render on GitHub | Small | |
-| Subagents | Already in Tier 2. Duplicated here because it's load-bearing for the 9/10 narrative: a harness that can't spawn itself isn't teaching hierarchical agents | Medium | |
+| Subagents | Already in Tier 2. Duplicated here because it's load-bearing for the 9/10 narrative: a harness that can't spawn itself isn't teaching hierarchical agents | Medium | Shipped |
 | Hooks | Already in Tier 2. User-configurable pre/post tool hooks teach extensibility and mirror Claude Code's hooks config | Small | |
 
 ---

@@ -10,6 +10,12 @@ entries are grouped by merged PR date, not SemVer releases.
 
 ### Added
 
+- **Subagents** (`spawn_subagent` tool) — delegate a self-contained
+  subtask to a nested `run_agent` with isolated history. The subagent
+  shares the parent's `execute_tool` and permission gate but runs with
+  a fresh context window, so its tool chatter doesn't eat the parent's
+  budget. One level deep (schema filter + module-level depth counter).
+  CONCEPTS §43 and `tests/test_subagent.py` cover the design.
 - **CONCEPTS §42** — pinned prompt: swapping readline + `rich.Live` for
   `prompt_toolkit`. Input now sticks to the bottom of the terminal while
   output scrolls above it (Claude-Code-style).

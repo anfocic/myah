@@ -80,6 +80,9 @@ Running notes on every concept introduced while building this harness. Read top-
 **Security**
 41. [Prompt injection defenses — two layers, neither a sandbox](#41-prompt-injection-defenses--two-layers-neither-a-sandbox)
 
+**Hierarchy**
+43. [Subagents — nested `run_agent` with isolated history](#43-subagents--nested-run_agent-with-isolated-history)
+
 ---
 
 ## 1. The agentic loop
@@ -961,6 +964,55 @@ The broader lesson: **terminal UI is a stack of conventions, not a set of indepe
 | 8 | Terminal resize mid-turn | prompt reflows, scrollback intact |
 
 See: `repl/ui.py:build_session`, `repl/ui.py:SlashCompleter`, `main.py` (`with patch_stdout`), `agent/loop.py` (streaming block, no Live), `permissions.py` (one-shot `pt_prompt`)
+
+---
+
+## 43. Subagents — nested `run_agent` with isolated history
+
+A subagent is the main agent's trick for "here, go figure this one thing out on your own." The parent emits a `spawn_subagent(task=...)` tool call; the harness runs a fresh `run_agent` with `history=[]`; the subagent streams its own turns, calls tools, eventually produces a final answer; that answer comes back to the parent as a single tool result. Two turns of parent conversation bracket an arbitrary amount of subagent work.
+
+### Why spend a whole feature on this
+
+Three payoffs, roughly in order of importance:
+
+1. **Context isolation.** The parent's 4k-token budget is precious. A task like "find every place `X` is called and summarize" might take the subagent six `grep` + `read_file` calls — 3k tokens of tool chatter — before producing a two-sentence answer. If the parent had done that work inline, its own history would now carry all six tool results. With a subagent, the parent's history grows by *one* tool result (the summary). The subagent's working memory is discarded when it returns.
+
+2. **Focus via persona.** The subagent's system prompt is different (see `build_system_prompt(subagent=True)`): no clarifying questions allowed (nobody's on the other end), answers should be concise, spawning further subagents is forbidden. This isn't just tone — it's a correctness aid. Small models (Qwen 7B etc.) will happily ask "would you like me to proceed?" mid-turn if not told otherwise, which would hang the parent forever.
+
+3. **Hierarchical mental model.** Most production harnesses (Claude Code, Cursor, Aider) support delegation in some form. Building one in ~80 lines makes the pattern legible: "it's just `run_agent` calling `run_agent`, with the same execute_tool and permission_check plumbed through."
+
+### Keeping it exactly one level deep
+
+Depth > 1 is a trap in this runtime. Each level duplicates the system prompt (~800 tokens) and the env block, the parent is blocked while any descendant runs, and a 7B model coordinating a three-level tree is going to produce garbage. So we cap at `_MAX_DEPTH = 1`:
+
+- **Schema filter** — `spawn_subagent` is stripped from the child's tool list (`child_tools = [t for t in tools if t["function"]["name"] != "spawn_subagent"]`). The model in the subagent doesn't see the tool as a callable option. Saves ~80 tokens per turn of the subagent's budget.
+- **Lock-guarded counter** — `_depth` at module scope, protected by a `threading.Lock`. The check-and-increment is atomic, so two parallel spawn calls from a single parent turn (emitted as parallel `tool_calls` and dispatched by `_run_tools_parallel`) don't race through the gate. The practical semantics: "at most one subagent in flight harness-wide at a time." Stricter than "max depth 1 per call-tree," but easier to reason about and the gap matters only when the parent emits parallel spawns — rare in practice.
+
+Belt and suspenders. Either alone is enough in the happy path; together they cover both the hallucination case and the parallel-spawn race.
+
+### Threading the same tools and permission gate
+
+The subagent gets the **same** `execute_tool` closure as the parent — so every tool call it makes goes through the same dispatcher, the same `make_execute_tool` closure, the same state. This matters for `harness_info`: the tool reports the REPL's context state, which the subagent would be wrong to see as "its own" context, but in practice the subagent rarely calls `harness_info` so the cost is nil.
+
+More load-bearing: the `permission_check` flows through unchanged. If the subagent tries to `bash "rm -rf /"`, the user sees the same permission prompt they'd see from the parent. A "session allowed" set previously granted to `bash` also applies (because it's a module global in `permissions.py`). The human is still in the loop at the same fidelity.
+
+This required hoisting `permission_check` out of main.py's per-turn closure — it used to be built fresh each iteration; now it's built once above the loop and passed into `make_execute_tool(state, permission_check=...)` so the `spawn_subagent` branch can forward it. A tiny refactor that the feature quietly demanded.
+
+### Surprises caught during implementation
+
+- **Streaming under `patch_stdout` works for free.** The subagent prints through the same `console` the parent does; `patch_stdout` sends everything above the pinned input line, so "parent is running tools" → "subagent streaming" → "parent resumes" appears as one continuous scrollback region. No extra plumbing.
+- **History shape was the cleanest validation.** In `tests/test_subagent.py`, the tightest assertion is about what the subagent's `stream_chat` was called with: `messages` must be length 2 (`[system, user_task]`) and must contain *none* of the parent's prior user/assistant text. That single check proves isolation without inspecting internal state.
+- **The `<subagent_result>` wrapper is a debug aid more than a safety feature.** The parent model treats wrapped content as regular tool output. But when you're reading a conversation transcript or a debug dump, the markers make it obvious what came from delegation vs. the parent's own synthesis. Same intuition as the `<injected_content>` wrapper in §41: visibility first, security second.
+
+### What we didn't build (on purpose)
+
+- **Parallel subagents.** Spawning two subagents concurrently from one parent turn would map nicely onto the existing `_run_tools_parallel` plumbing, but the current lock + counter forces "one subagent at a time harness-wide." Doing better requires propagating a logical depth through `ThreadPoolExecutor.submit` (ContextVar + `copy_context().run(...)` at the submit site), which is real machinery for a rare case. Left for when a real use case appears.
+- **Custom tool subsets.** A `spawn_subagent(task, tools=["grep", "read_file"])` that restricts the child's tool list would be a nice fit for "investigate without touching state." Easy to add — one extra filter in `child_tools`. Skipped because it's speculation until we see the parent model actually emit constrained calls.
+- **Return type richness.** Right now the subagent returns a `str`. A structured `{summary, evidence: [files_read]}` would be more useful for programmatic followup, but small models produce cleaner free-text than cleaner JSON, so prose wins for now.
+
+The lesson: **hierarchical agents aren't a new concept — they're `run_agent` calling `run_agent` with discipline.** The discipline (isolation, depth cap, shared permission gate, subagent-flavored system prompt) is the feature; the recursion itself is almost trivial.
+
+See: `tools/subagent.py`, `repl/tool_registry.py` (schema + dispatcher branch), `agent/system_prompt.py:build_system_prompt` (subagent persona), `tests/test_subagent.py`
 
 ---
 
