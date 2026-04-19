@@ -105,7 +105,11 @@ Running notes on every concept introduced while building this harness. Read top-
 
 44. [First-party adapters — Anthropic native, OpenAI/DeepSeek preset](#44-first-party-adapters--anthropic-native-openaideepseek-preset)
 
+<br>
+
 ---
+
+<br>
 
 # 1. The agentic loop
 
@@ -138,7 +142,11 @@ Two loops stacked. The **inner loop** (blue) runs zero-to-many times within one 
 
 See: `agent/loop.py:run_agent`
 
+<br>
+
 ---
+
+<br>
 
 # 2. Tool calling (OpenAI function-calling format)
 
@@ -159,7 +167,11 @@ The model returns `tool_calls[*].function.name` + `arguments`. The harness is re
 
 Ollama, OpenAI, and Anthropic all use slight variants of this same schema shape.
 
+<br>
+
 ---
+
+<br>
 
 # 3. History vs messages
 
@@ -170,7 +182,11 @@ Two lists, easily confused:
 
 Tool messages are deliberately **not** kept in history — they're intermediate work, not conversation.
 
+<br>
+
 ---
+
+<br>
 
 # 4. Context window
 
@@ -191,7 +207,11 @@ The model has a fixed token budget (`NUM_CTX`, default 4096). Everything you sen
 
 Widths are roughly proportional to real token counts. `system` and `schemas` are tiny fixed overhead; `history` and `tool results` are what actually eat the budget. A single big tool result plus a mid-length history can overflow `NUM_CTX` before the model even finishes the turn — that's the pressure §6 and §20 exist to manage.
 
+<br>
+
 ---
+
+<br>
 
 # 5. Token counting: estimate vs real
 
@@ -204,7 +224,11 @@ We use real when available, fall back to the estimate (e.g. for pre-call trim de
 
 See: `agent/tokens.py:estimate_tokens`
 
+<br>
+
 ---
+
+<br>
 
 # 6. Context pressure → trim
 
@@ -212,7 +236,11 @@ When `ctx_used > 80% * NUM_CTX`, drop oldest user/assistant pairs from history u
 
 See: `agent/context.py:trim_history`
 
+<br>
+
 ---
+
+<br>
 
 # 7. Summarize dropped turns
 
@@ -222,7 +250,11 @@ Cost: one extra model call per trim event. Benefit: you keep the gist of old con
 
 See: `agent/context.py:summarize_dropped`
 
+<br>
+
 ---
+
+<br>
 
 # 8. TUI with `rich`
 
@@ -230,7 +262,11 @@ See: `agent/context.py:summarize_dropped`
 
 See: `repl/ui.py:ctx_tag`
 
+<br>
+
 ---
+
+<br>
 
 # 9. Debug logging
 
@@ -245,7 +281,11 @@ JSONL (one JSON object per line) is ideal here: append-only, greppable with `jq`
 
 See: `agent/status.py:log_response`
 
+<br>
+
 ---
+
+<br>
 
 # 10. Spinner feedback during blocking calls
 
@@ -257,7 +297,11 @@ Pattern: pass the `status` handle into the agent loop so it can report *what* it
 
 See: `agent/status.py:status_line`, `main.py` REPL loop
 
+<br>
+
 ---
+
+<br>
 
 # 11. Models don't know what they are
 
@@ -267,7 +311,11 @@ Ask a local `qwen2.5` model "who are you?" and it will confidently answer "I'm b
 
 See: system prompt in `agent/loop.py:run_agent`
 
+<br>
+
 ---
+
+<br>
 
 # 12. Streaming responses + TTFT
 
@@ -285,7 +333,11 @@ Implementation notes:
 
 See: `agent/loop.py:run_agent`
 
+<br>
+
 ---
+
+<br>
 
 # 13. Small models hallucinate library APIs
 
@@ -301,7 +353,11 @@ The model sounded confident and structurally coherent, but the code was wrong in
 
 Use a bigger model (`qwen2.5-coder:14b`, Claude, GPT-4) when you want code advice about the harness itself.
 
+<br>
+
 ---
+
+<br>
 
 # 14. Surgical editing vs full-file writes
 
@@ -318,7 +374,11 @@ This is why Claude Code's `Edit` tool looks the way it does; we copied the shape
 
 See: `tools/files.py:edit_file`
 
+<br>
+
 ---
+
+<br>
 
 # 15. Regex search as a tool
 
@@ -333,7 +393,11 @@ Other sanity caps: skip files > 1 MB, skip binaries (anything that fails UTF-8 d
 
 See: `tools/search.py:grep`
 
+<br>
+
 ---
+
+<br>
 
 # 16. Tool permissioning / the trust model
 
@@ -354,7 +418,11 @@ Claude Code's whole UX is built on this trust model — every destructive action
 
 See: `permissions.py`, `agent/loop.py:run_agent` (the callback wiring), `main.py` (closure per turn)
 
+<br>
+
 ---
+
+<br>
 
 # 17. Line-numbered reads + the "what's on line N" failure mode
 
@@ -376,7 +444,11 @@ Two broader lessons:
 
 See: `tools/files.py:read_file`
 
+<br>
+
 ---
+
+<br>
 
 # 18. Confident-plausible regressions (§13, second flavor)
 
@@ -403,7 +475,11 @@ Two lessons:
 
 See: also §13. Review transcript archived in `logs/agent.jsonl`.
 
+<br>
+
 ---
+
+<br>
 
 # 19. Shell access + why the permission layer matters here
 
@@ -421,7 +497,11 @@ Exit codes, stdout, and stderr are all surfaced separately: the model sees `[std
 
 See: `tools/bash.py`, `permissions.py:NEVER_TRUNCATE_KEYS`
 
+<br>
+
 ---
+
+<br>
 
 # 20. Generic tool-result cap (defence in depth)
 
@@ -433,7 +513,11 @@ Pedagogy: per-tool caps are a *contract* with tool authors; the harness cap is a
 
 See: `agent/tokens.py:truncate_tool_result`, `config.py:TOOL_RESULT_MAX_BYTES`
 
+<br>
+
 ---
+
+<br>
 
 # 21. Interrupts and input history — cheap REPL ergonomics
 
@@ -452,7 +536,11 @@ The surprise: the *import* is the feature. Python's `input()` silently upgrades 
 
 See: `agent/loop.py:run_agent` (try/except block), `repl/ui.py:build_session` (FileHistory wiring)
 
+<br>
+
 ---
+
+<br>
 
 # 22. Control plane vs data plane — slash commands
 
@@ -471,7 +559,11 @@ Two design choices worth naming:
 
 See: `repl/commands.py:SLASH_COMMANDS`, `repl/commands.py:handle_slash`
 
+<br>
+
 ---
+
+<br>
 
 # 23. Harness introspection — tool closes over state
 
@@ -491,7 +583,11 @@ The caveat written into the output string: `ctx_used` is the **previous turn's s
 
 See: `tools/harness.py`, `repl/tool_registry.py:make_execute_tool`
 
+<br>
+
 ---
+
+<br>
 
 # 24. Rendered markdown output — streaming a Live canvas
 
@@ -507,7 +603,11 @@ Why not render ONLY at the end? Because token-by-token arrival is the thing that
 
 See: `agent/loop.py:run_agent` (Live/Markdown block)
 
+<br>
+
 ---
+
+<br>
 
 # 25. Parallel tool execution — serial gate, parallel body
 
@@ -537,7 +637,11 @@ Speedup is real: three 300ms sleeps serial = 0.9s, parallel = 0.3s (verified).
 
 See: `agent/loop.py:_run_tools_parallel`
 
+<br>
+
 ---
+
+<br>
 
 # 26. Session persistence + project context (CLAUDE.md)
 
@@ -565,7 +669,11 @@ And the subtle correctness question: should the saved session include *tool* mes
 
 See: `repl/persistence.py:load_session`, `repl/persistence.py:save_session`, `repl/persistence.py:has_saved_session`, `main.py:_parse_args`, `agent/system_prompt.py:build_system_prompt`
 
+<br>
+
 ---
+
+<br>
 
 # 27. Plan mode — cheap safety via prompt + tool gate
 
@@ -582,7 +690,11 @@ Surfaced in `/context` and the `harness_info` tool so the model can detect its o
 
 See: `agent/system_prompt.py:build_system_prompt` (plan block), `agent/loop.py:_run_tools_parallel` (short-circuit), `repl/commands.py:cmd_plan`
 
+<br>
+
 ---
+
+<br>
 
 # 28. Env injection — zero-tool-call context
 
@@ -607,7 +719,11 @@ A subtle correctness choice: when `git` fails (not a repo, command missing, time
 
 See: `agent/system_prompt.py:_env_block`, `agent/system_prompt.py:_git`
 
+<br>
+
 ---
+
+<br>
 
 # 29. Plan mode revisited — read/write split
 
@@ -635,7 +751,11 @@ Allow-list over deny-list because new tools default to blocked. A future `delete
 
 See: `agent/__init__.py:READ_ONLY_TOOLS`, `_build_system_prompt` (plan block), `_run_tools_parallel` (gate)
 
+<br>
+
 ---
+
+<br>
 
 # 30. Multi-provider abstraction — two protocol families, one contract
 
@@ -667,7 +787,11 @@ The pedagogy is worth naming: **an abstraction isn't proven by wrapping one thin
 
 See: `providers/base.py`, `providers/ollama_adapter.py`, `providers/openai_compat.py`, `agent/loop.py:run_agent` (provider lookup)
 
+<br>
+
 ---
+
+<br>
 
 # 31. Display layer — callbacks, not prints
 
@@ -692,7 +816,11 @@ A related streaming note: **TTFT and generation time are distinct.** `tok_per_s 
 
 See: `agent/loop.py:_run_tools_parallel` (callbacks + args threading), `display.py:on_tool_start` / `on_tool_end` (renderers), `repl/ui.py:build_prompt`
 
+<br>
+
 ---
+
+<br>
 
 # 32. Raschka's 6 components as a harness audit
 
@@ -718,7 +846,11 @@ Worth re-running every few PRs. If a box that used to say "have" has decayed int
 
 See: https://magazine.sebastianraschka.com/p/components-of-a-coding-agent
 
+<br>
+
 ---
+
+<br>
 
 # 33. Manual compact — proactive context control
 
@@ -744,7 +876,11 @@ Claude Code's `/compact` does something richer: it can take a target instruction
 
 See: `agent/context.py:compact_history`, `repl/commands.py:cmd_compact`
 
+<br>
+
 ---
+
+<br>
 
 # 34. Rewind — snapshot-based undo
 
@@ -768,7 +904,11 @@ Why this is different from a generic undo: we're not trying to rewind *all* stat
 
 See: `repl/commands.py:cmd_rewind`, `main.py` REPL loop (snapshot push), `repl/commands.py:cmd_clear`
 
+<br>
+
 ---
+
+<br>
 
 # 35. Microcompact — eliding stale tool results mid-turn
 
@@ -790,7 +930,11 @@ The pedagogy is the part worth keeping: **context management isn't a single mech
 
 See: `agent/context.py:microcompact`, `agent/loop.py:run_agent` (top-of-loop call), `config.py` constants nearby
 
+<br>
+
 ---
+
+<br>
 
 # 36. Narrow named tools > generic shell (for small models)
 
@@ -828,7 +972,11 @@ Put another way: **tools are subscriptions, not one-time purchases.** Treat the 
 
 See: `tools/git.py`, `repl/tool_registry.py` (git_checkout schema + dispatcher), `permissions.py:SENSITIVE_TOOLS`
 
+<br>
+
 ---
+
+<br>
 
 # 37. Startup constants vs runtime state — model switching
 
@@ -877,7 +1025,11 @@ Concept-wise this is the same pattern as §22 (control plane vs data plane): the
 
 See: `providers/__init__.py` (build_provider + active-provider registry), `agent/system_prompt.py:build_system_prompt` (live read), `tools/harness.py:harness_snapshot` (live read), `repl/commands.py:cmd_model`
 
+<br>
+
 ---
+
+<br>
 
 # 38. Typed state — TypedDict as a type-checker-only contract
 
@@ -910,7 +1062,11 @@ The broader pedagogy: **when you reach for a dataclass, ask whether a TypedDict 
 
 See: `repl/state.py` (State TypedDict + `new_state()` factory), `tools/harness.py` (widened `Mapping[str, Any]` reader signature)
 
+<br>
+
 ---
+
+<br>
 
 # 39. Module boundaries — when the monolith stops teaching
 
@@ -945,7 +1101,11 @@ A useful tell: **if re-exports in `__init__.py` keep every caller unchanged, the
 
 See: `agent/__init__.py` (re-export surface + top-level `READ_ONLY_TOOLS`), `repl/__init__.py`, `repl/console.py` (shared singleton), `main.py` (thin composition layer)
 
+<br>
+
 ---
+
+<br>
 
 # 40. Testing the loop — Protocol substitution via a scripted provider
 
@@ -988,7 +1148,11 @@ The broader pedagogy is about the Protocol abstraction **doing work for you** th
 
 See: `tests/test_integration.py`, `providers/base.py:Provider` (the Protocol being satisfied), `providers/__init__.py:set_active_provider`
 
+<br>
+
 ---
+
+<br>
 
 # 41. Prompt injection defenses — two layers, neither a sandbox
 
@@ -1048,7 +1212,11 @@ The broader pedagogy: **security in an agent harness is layered by attack class,
 
 See: `security.py`, `agent/loop.py` (scan applied before `truncate_tool_result`), `tools/files.py` + `tools/search.py` (cwd guards at tool entry), `permissions.py` (the primary layer this is defense-in-depth on top of)
 
+<br>
+
 ---
+
+<br>
 
 # 42. Pinned prompt — swapping readline + rich.Live for prompt_toolkit
 
@@ -1098,7 +1266,11 @@ The broader lesson: **terminal UI is a stack of conventions, not a set of indepe
 
 See: `repl/ui.py:build_session`, `repl/ui.py:SlashCompleter`, `main.py` (`with patch_stdout`), `agent/loop.py` (streaming block, no Live), `permissions.py` (one-shot `pt_prompt`)
 
+<br>
+
 ---
+
+<br>
 
 # 43. Subagents — nested `run_agent` with isolated history
 
@@ -1147,7 +1319,11 @@ The lesson: **hierarchical agents aren't a new concept — they're `run_agent` c
 
 See: `tools/subagent.py`, `repl/tool_registry.py` (schema + dispatcher branch), `agent/system_prompt.py:build_system_prompt` (subagent persona), `tests/test_subagent.py`
 
+<br>
+
 ---
+
+<br>
 
 # 44. First-party adapters — Anthropic native, OpenAI/DeepSeek preset
 
