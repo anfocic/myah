@@ -10,12 +10,38 @@ entries are grouped by merged PR date, not SemVer releases.
 
 ### Added
 
+- **CONCEPTS §42** — pinned prompt: swapping readline + `rich.Live` for
+  `prompt_toolkit`. Input now sticks to the bottom of the terminal while
+  output scrolls above it (Claude-Code-style).
+- **`--resume` flag** on `python main.py` — session persistence is now
+  fully opt-in on both load *and* save, so a forgotten flag can't
+  silently overwrite the prior session.
+- `tests/test_repl_ui.py` — pure-function tests for `SlashCompleter`
+  and `build_prompt` (the parts that don't need a real TTY).
 - Coverage reporting via `pytest-cov` + Codecov upload from CI.
 - `mypy` type-check step in CI with pragmatic defaults.
 - Pre-commit hook config (`ruff`, whitespace, YAML check).
 - Dependabot config for pip + GitHub Actions updates.
 - CI status + coverage badges in README.
 - `CHANGELOG.md` (this file).
+
+### Changed
+
+- **TUI engine**: `readline` + `rich.Console.input()` → `prompt_toolkit`
+  `PromptSession` under `patch_stdout`. Tab completion of slash
+  commands now lives in a `SlashCompleter(Completer)` subclass.
+  Input history moved from `~/.mia_history` (readline format) to
+  `~/.mia_input_history` (prompt_toolkit `FileHistory`) — formats
+  aren't compatible, so arrow-key recall resets on first launch.
+- `rich.live.Live` streaming canvas removed; tokens now stream as
+  plain text because `Live` + `patch_stdout` fight over the cursor.
+  Restoring streaming markdown rendering is tracked in ROADMAP Tier 4.
+- `rich.Console.status()` spinner removed; status lines now print to
+  scrollback (`Thinking…`, `Running tools (2/3)`) under the pinned
+  prompt. `run_agent`, `_run_tools_parallel`, and `check_permission`
+  all dropped their `status=` parameter.
+- README trimmed to a one-screen landing page — the detailed tour
+  lives in `docs/CONCEPTS.md`.
 
 ### Fixed
 
