@@ -70,7 +70,16 @@ def main() -> None:
             "[dim]↳ prior session on disk · re-launch with --resume to "
             "load (this session won't be saved)[/dim]\n"
         )
-    execute_tool = make_execute_tool(state)
+
+    # Hoist permission_check out of the per-turn closure so make_execute_tool
+    # can capture it — the spawn_subagent branch needs to forward the same
+    # gate into the child run_agent. `_session_allowed` inside permissions.py
+    # is the only mutable state, kept as a module global there, so a single
+    # closure for the whole process is correct.
+    def perm_check(name, args):
+        return check_permission(console, name, args)
+
+    execute_tool = make_execute_tool(state, permission_check=perm_check)
 
     # patch_stdout redirects every stdout write (including Rich's) to
     # scroll *above* the prompt_toolkit input line. raw=True preserves
@@ -109,9 +118,6 @@ def main() -> None:
             state["snapshots"].append(copy.deepcopy(state["history"]))
             dropped: list = []
             try:
-                def perm_check(name, args):
-                    return check_permission(console, name, args)
-
                 response, state["history"], state["ctx_used"], stats = run_agent(
                     user_input, tools, execute_tool, state["history"],
                     console=console,
