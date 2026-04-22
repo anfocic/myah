@@ -8,8 +8,11 @@ import json
 
 import pytest
 
+import httpx
+
 from providers import ProviderError, ToolCall
 from providers.anthropic_adapter import (
+    AnthropicProvider,
     _parse_sse,
     _translate_messages,
     _translate_tools,
@@ -357,3 +360,81 @@ def test_translate_then_id_pairing_handles_mixed_history():
     result_msg = out[4]
     assert result_msg["role"] == "user"
     assert result_msg["content"][0]["tool_use_id"] == tool_use["id"]
+
+
+# ---------- count_tokens -------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict, text: str = ""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text or json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _install_fake_post(monkeypatch, *, status: int = 200, payload: dict | None = None, capture: dict | None = None):
+    def fake_post(self, url, json=None, headers=None):
+        if capture is not None:
+            capture["url"] = url
+            capture["json"] = json
+            capture["headers"] = headers
+        return _FakeResponse(status, payload or {}, text=json_text(payload))
+    monkeypatch.setattr("httpx.Client.post", fake_post, raising=True)
+
+
+def json_text(payload):
+    return "" if payload is None else _stringify(payload)
+
+
+def _stringify(payload: dict) -> str:
+    import json as _json
+    return _json.dumps(payload)
+
+
+def test_count_tokens_calls_count_endpoint_and_returns_input_tokens(monkeypatch):
+    capture: dict = {}
+    _install_fake_post(monkeypatch, payload={"input_tokens": 1234}, capture=capture)
+
+    p = AnthropicProvider(model="claude-sonnet-4-6", api_key="sk-test")
+    n = p.count_tokens(
+        messages=[
+            {"role": "system", "content": "persona"},
+            {"role": "user", "content": "hi"},
+        ],
+        tools=[{"type": "function", "function": {"name": "read_file", "description": "d", "parameters": {"type": "object", "properties": {}}}}],
+    )
+
+    assert n == 1234
+    assert capture["url"].endswith("/messages/count_tokens")
+    assert capture["json"]["model"] == "claude-sonnet-4-6"
+    assert capture["json"]["system"] == "persona"
+    assert capture["json"]["messages"] == [{"role": "user", "content": "hi"}]
+    # Tools get translated from OpenAI shape to Anthropic shape
+    assert capture["json"]["tools"][0]["name"] == "read_file"
+    assert "max_tokens" not in capture["json"]  # count endpoint doesn't take it
+
+
+def test_count_tokens_raises_on_http_error(monkeypatch):
+    _install_fake_post(monkeypatch, status=401, payload={"error": "unauthorized"})
+    p = AnthropicProvider(model="claude-sonnet-4-6", api_key="sk-test")
+    with pytest.raises(ProviderError, match="HTTP 401"):
+        p.count_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_tokens_raises_on_missing_field(monkeypatch):
+    _install_fake_post(monkeypatch, payload={"something_else": 7})
+    p = AnthropicProvider(model="claude-sonnet-4-6", api_key="sk-test")
+    with pytest.raises(ProviderError, match="missing input_tokens"):
+        p.count_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_tokens_raises_on_connect_error(monkeypatch):
+    def boom(self, url, json=None, headers=None):
+        raise httpx.ConnectError("refused")
+    monkeypatch.setattr("httpx.Client.post", boom, raising=True)
+
+    p = AnthropicProvider(model="claude-sonnet-4-6", api_key="sk-test")
+    with pytest.raises(ProviderError, match="unreachable"):
+        p.count_tokens([{"role": "user", "content": "hi"}])
