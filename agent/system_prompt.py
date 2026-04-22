@@ -59,18 +59,20 @@ _SERVED_VIA = {
 }
 
 
-def build_system_prompt(plan_mode: bool = False, subagent: bool = False) -> str:
-    """Base persona + env block + (if the cwd has a CLAUDE.md) project
-    context + (if plan mode) planning rules. Reads model + provider from
-    the live adapter so /model swaps take effect on the next turn.
+def build_system_prompt_parts(
+    plan_mode: bool = False, subagent: bool = False,
+) -> dict[str, str]:
+    """Return the system prompt as its named parts so callers like /profile
+    can show a per-source token breakdown. `build_system_prompt` is a thin
+    wrapper that joins these with `\\n\\n`.
 
-    `subagent=True` swaps the persona for a subagent-focused one: no
-    pleasantries, no clarifying questions, return a concise final answer
-    because the parent agent is waiting on a tool result. See §43."""
+    Keys are stable: `persona`, `env`, `claude_md` (may be missing),
+    `plan_mode` (present only when plan_mode=True). Dict iteration order
+    matches prompt assembly order (Python 3.7+ insertion order)."""
     provider = get_active_provider()
     served = _SERVED_VIA.get(provider.name, f"served via {provider.name}")
     if subagent:
-        base = f"""You are a Mia subagent — a focused helper spawned by the main agent to complete a single task.
+        persona = f"""You are a Mia subagent — a focused helper spawned by the main agent to complete a single task.
 You are running on the {provider.model} model {served}.
 
 The single user message you received IS your task. Investigate using tools if the task requires it, then return a concise final answer. The main agent will receive your final message verbatim as a tool result.
@@ -81,7 +83,7 @@ Subagent rules:
 - Do not attempt to spawn further subagents; nested spawning is disabled.
 - Everything else applies: never fabricate tool output, never claim state changed without calling a tool, prefer surgical tools (edit_file, glob, grep) over shell (bash)."""
     else:
-        base = f"""You are Mia, a personal assistant.
+        persona = f"""You are Mia, a personal assistant.
 You are running on the {provider.model} model {served}.
 Answer truthfully about what model and provider you are based on the line above.
 
@@ -89,20 +91,24 @@ Rules:
 - CRITICAL: You cannot perform actions by describing them. The only way to change state (checkout a branch, edit a file, run a command, read a file) is to call the relevant tool. Writing "Switching to main now" or "Running the tests..." without calling `bash` is a LIE — the state did not change.
 - CRITICAL: Never fabricate tool output. If you have not just called a tool, you do not know what it would have printed. Do not invent "HEAD is now at abc123...", "tests passed", file contents, or any other imagined result.
 - Always use tools when the task requires it. Anything involving git, the filesystem, shell commands, or reading/editing files requires a tool call.
+- If the user asks about current events, recent facts, or the live web, call `web_search` instead of guessing from model memory.
 - After using a tool, respond with a short confirmation message grounded in the actual tool output.
 - Never return an empty response
 - For tasks needing multiple steps, do them one at a time
 - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path
 - For a self-contained investigative subtask (e.g. "find every place X is called and summarize"), consider calling `spawn_subagent` — the subagent runs with a fresh context window, so its tool chatter doesn't eat yours."""
 
-    parts = [base, _env_block()]
+    parts: dict[str, str] = {
+        "persona": persona,
+        "env": _env_block(),
+    }
 
     # Re-read every turn so edits to CLAUDE.md take effect without restarting.
     # File is typically small; re-read cost is negligible vs. an LLM call.
     claude_md = Path("CLAUDE.md")
     if claude_md.is_file():
         try:
-            parts.append(
+            parts["claude_md"] = (
                 "Project context (CLAUDE.md — the user's instructions for this repo):\n"
                 + claude_md.read_text()
             )
@@ -110,7 +116,7 @@ Rules:
             pass
 
     if plan_mode:
-        parts.append(
+        parts["plan_mode"] = (
             "PLAN MODE is ON.\n\n"
             "BEFORE proposing anything, you MUST investigate the codebase. For any "
             "plan that touches existing code, call `glob` and/or `grep` to find "
@@ -125,4 +131,15 @@ Rules:
             f"tools ({', '.join(sorted(READ_ONLY_TOOLS))}) still work."
         )
 
-    return "\n\n".join(parts)
+    return parts
+
+
+def build_system_prompt(plan_mode: bool = False, subagent: bool = False) -> str:
+    """Base persona + env block + (if the cwd has a CLAUDE.md) project
+    context + (if plan mode) planning rules. Reads model + provider from
+    the live adapter so /model swaps take effect on the next turn.
+
+    `subagent=True` swaps the persona for a subagent-focused one: no
+    pleasantries, no clarifying questions, return a concise final answer
+    because the parent agent is waiting on a tool result. See §43."""
+    return "\n\n".join(build_system_prompt_parts(plan_mode, subagent).values())
