@@ -4,6 +4,9 @@ the model in the loop. Every handler takes `(state, arg="")` — commands
 that don't use `arg` ignore it, so `handle_slash` can dispatch uniformly
 without inspecting function signatures."""
 from agent import apply_summary, compact_history
+from agent.system_prompt import build_system_prompt
+from agent.tokens import estimate_tokens
+from config import NUM_CTX
 from providers import (
     SUPPORTED_PROVIDERS,
     ProviderError,
@@ -12,12 +15,13 @@ from providers import (
     list_ollama_models,
     set_active_provider,
 )
+from rich.panel import Panel
 from repl.console import console
 from repl.persistence import wipe_session
 from repl.state import State
 from repl.tool_registry import TOOL_NAMES
+from repl.tool_registry import tools as REGISTERED_TOOLS
 from repl.ui import ctx_tag
-from tools.harness import harness_snapshot
 
 
 def cmd_help(state: State, arg: str = "") -> None:
@@ -36,17 +40,45 @@ def cmd_clear(state: State, arg: str = "") -> None:
     console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
 
+def _next_turn_messages(state: State) -> list[dict]:
+    """Reconstruct the exact messages array run_agent would send at the
+    start of a new turn: system prompt + durable history. No synthetic
+    user turn — /context reports what's already committed, not what the
+    next user input would add."""
+    sys_prompt = build_system_prompt(plan_mode=state.get("plan_mode", False))
+    return [{"role": "system", "content": sys_prompt}] + list(state["history"])
+
+
+def _count_or_estimate(
+    provider, messages: list[dict], tools: list[dict] | None
+) -> tuple[int, str]:
+    """Try the provider's exact tokenizer; on any failure fall back to the
+    char/4 estimator so /context and /profile never hard-fail.
+
+    Returns (count, source_label). source_label is "exact" on success or
+    a short "estimate (...)" string explaining why we fell back."""
+    try:
+        return provider.count_tokens(messages, tools), "exact"
+    except ProviderError as e:
+        return estimate_tokens(messages), f"estimate ({e})"
+    except Exception as e:  # noqa: BLE001 — last-ditch; never break the REPL
+        return estimate_tokens(messages), f"estimate ({type(e).__name__})"
+
+
 def cmd_context(state: State, arg: str = "") -> None:
-    s = harness_snapshot(state, TOOL_NAMES)
-    tag = ctx_tag(s["ctx_used"], s["num_ctx"])
+    provider = get_active_provider()
+    messages = _next_turn_messages(state)
+    count, source = _count_or_estimate(provider, messages, REGISTERED_TOOLS)
+    state["ctx_used"] = count  # keep the per-turn tag in sync with the reading
+    tag = ctx_tag(count, NUM_CTX)
     plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
     console.print(
-        f"[bold]model:[/bold] {s['model']} [dim]({s['provider']})[/dim]\n"
-        f"[bold]num_ctx:[/bold] {s['num_ctx']}\n"
-        f"[bold]ctx used:[/bold] {s['ctx_used']} {tag}\n"
-        f"[bold]history turns:[/bold] {s['history_turns']}\n"
+        f"[bold]model:[/bold] {provider.model} [dim]({provider.name})[/dim]\n"
+        f"[bold]num_ctx:[/bold] {NUM_CTX:,}\n"
+        f"[bold]ctx (next turn):[/bold] {count:,} {tag} [dim]· {source}[/dim]\n"
+        f"[bold]history turns:[/bold] {len(state['history']) // 2}\n"
         f"[bold]plan mode:[/bold] {plan}\n"
-        f"[bold]tools:[/bold] {', '.join(s['tools'])}"
+        f"[bold]tools:[/bold] {', '.join(TOOL_NAMES)}"
     )
 
 
@@ -133,6 +165,103 @@ def cmd_rewind(state: State, arg: str = "") -> None:
     )
 
 
+_PROFILE_BAR_WIDTH = 28
+_PROFILE_LABEL_LEN = 10
+
+
+def _profile_bar(tokens: int, num_ctx: int) -> str:
+    """Render a stacked-block bar showing `tokens` filled out of `num_ctx`.
+    Clamps at the bar width, so over-budget states show a full bar (not a
+    wrapped one) — the numeric readout next to it still shows the overflow."""
+    if num_ctx <= 0:
+        return "░" * _PROFILE_BAR_WIDTH
+    ratio = max(0.0, min(1.0, tokens / num_ctx))
+    filled = round(_PROFILE_BAR_WIDTH * ratio)
+    return "█" * filled + "░" * (_PROFILE_BAR_WIDTH - filled)
+
+
+def _profile_row(label: str, tokens: int, num_ctx: int) -> str:
+    # No square brackets around the bar — rich parses `[text]` as markup
+    # (e.g. `[bold]…[/bold]`) and silently eats anything that isn't a known
+    # style. `[system ████]` → gone. Whitespace separation reads fine and
+    # sidesteps the parser.
+    pct = (tokens / num_ctx * 100) if num_ctx > 0 else 0.0
+    bar = _profile_bar(tokens, num_ctx)
+    return f"  {label:<{_PROFILE_LABEL_LEN}} {bar}  {tokens:>5,}  {pct:>4.1f}%"
+
+
+def _blank_content(messages: list[dict], role: str) -> list[dict]:
+    """Return a copy of messages with content="" on every message with the
+    given role. Used for marginal-diff counting: replacing content keeps the
+    role sequence valid (Anthropic rejects sequences with missing roles)
+    while zeroing out that role's content-token contribution."""
+    return [
+        ({**m, "content": ""} if m.get("role") == role else m)
+        for m in messages
+    ]
+
+
+def cmd_profile(state: State, arg: str = "") -> None:
+    """Per-role breakdown of what the next turn would send, using the
+    active provider's real tokenizer.
+
+    Marginal-diff method — each row equals the delta between "full prompt"
+    and "full prompt with that role's content blanked out". So every row
+    is provider-exact for that category's content tokens. Rows sum to
+    total-minus-framing; the remainder is shown as a "framing" row so
+    nothing is hidden. Tool messages are intra-turn scratch space (not
+    in state['history']) and don't show here."""
+    provider = get_active_provider()
+    messages = _next_turn_messages(state)
+
+    try:
+        total_all = provider.count_tokens(messages, REGISTERED_TOOLS)
+        total_notools = provider.count_tokens(messages, None)
+        total_nosys = provider.count_tokens(_blank_content(messages, "system"), None)
+        total_nouser = provider.count_tokens(_blank_content(messages, "user"), None)
+        total_noasst = provider.count_tokens(_blank_content(messages, "assistant"), None)
+        source = f"exact via {provider.name}"
+        tools_row = max(0, total_all - total_notools)
+        system_row = max(0, total_notools - total_nosys)
+        user_row = max(0, total_notools - total_nouser)
+        asst_row = max(0, total_notools - total_noasst)
+        framing = max(0, total_notools - (system_row + user_row + asst_row))
+        total = total_all
+    except Exception as e:  # noqa: BLE001 — last-ditch fallback (covers ProviderError)
+        # Fallback: char/4 per role. Rows only sum to total (no framing row).
+        history = state["history"]
+        user_msgs = [m for m in history if m.get("role") == "user"]
+        asst_msgs = [m for m in history if m.get("role") == "assistant"]
+        system_row = estimate_tokens([{"role": "system", "content": messages[0]["content"]}])
+        user_row = estimate_tokens(user_msgs)
+        asst_row = estimate_tokens(asst_msgs)
+        tools_row = 0
+        framing = 0
+        total = system_row + user_row + asst_row
+        source = f"estimate ({type(e).__name__}: {e})"
+
+    total_pct = (total / NUM_CTX * 100) if NUM_CTX > 0 else 0.0
+
+    lines = [
+        _profile_row("system", system_row, NUM_CTX),
+        _profile_row("user", user_row, NUM_CTX),
+        _profile_row("assistant", asst_row, NUM_CTX),
+        _profile_row("tools", tools_row, NUM_CTX),
+        _profile_row("framing", framing, NUM_CTX),
+        "",
+        f"  [bold]total:[/bold] {total:,} / {NUM_CTX:,}  ({total_pct:.1f}%)  [dim]· {source}[/dim]",
+        "  [dim]tool messages are intra-turn and not shown[/dim]",
+    ]
+
+    title = (
+        f"[bold]Context profile[/bold] [dim]· {provider.model} "
+        f"({provider.name}) · NUM_CTX={NUM_CTX:,}[/dim]"
+    )
+    console.print(
+        Panel("\n".join(lines), title=title, border_style="dim", padding=(1, 2))
+    )
+
+
 def cmd_model(state: State, arg: str = "") -> None:
     """List or swap the active model at runtime. No arg → list locally
     available ollama tags + the current model. With arg → swap.
@@ -209,6 +338,7 @@ SLASH_COMMANDS: dict = {
     "/compact": (cmd_compact, "summarize older turns, keep the last 2"),
     "/rewind": (cmd_rewind, "undo N turns (default 1) via in-memory snapshots"),
     "/model": (cmd_model, "list or swap the active model (e.g. /model qwen2.5:14b)"),
+    "/profile": (cmd_profile, "per-role token breakdown of the next turn's prompt"),
 }
 
 

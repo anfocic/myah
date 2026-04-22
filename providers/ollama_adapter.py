@@ -71,6 +71,29 @@ class OllamaProvider(Provider):
                 raise ProviderError(f"ollama HTTP error: {e}") from e
             raise
 
+    def count_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> int:
+        """Ollama has no tokenize endpoint in most builds. Trick: run a real
+        chat with num_predict=1 so the server tokenizes the prompt once,
+        emits one sampled token, then stops. `prompt_eval_count` is the
+        exact input-token count for the live num_ctx. ~150-200ms locally."""
+        try:
+            response = self._client.chat(
+                model=self.model,
+                messages=_strip_internal_tool_calls(messages),
+                tools=tools,
+                options={"num_predict": 1},
+            )
+        except ConnectionError as e:
+            raise ProviderError(f"ollama unreachable: {e}") from e
+        count = getattr(response, "prompt_eval_count", None)
+        if count is None:
+            raise ProviderError("ollama did not return prompt_eval_count")
+        return int(count)
+
     def chat(self, messages: list[dict], num_ctx: int) -> tuple[str, Usage]:
         try:
             response = self._client.chat(

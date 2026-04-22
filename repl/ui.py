@@ -18,6 +18,8 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
+from config import NUM_CTX
+from providers import get_active_provider
 from repl.state import State
 
 INPUT_HISTORY_FILE = os.path.expanduser("~/.mia_input_history")
@@ -58,28 +60,94 @@ def _short_branch(name: str) -> str:
     return name if len(name) <= _BRANCH_MAX else name[: _BRANCH_MAX - 1] + "…"
 
 
-def build_prompt(state: State) -> FormattedText:
-    """`You [branch · plan · debug] ›` as prompt_toolkit FormattedText.
-    Badges only render when the condition applies so the prompt stays
-    clean in the common case. Long branches get truncated so the prompt
-    doesn't eat the visible line."""
-    out: list[tuple[str, str]] = [("bold ansimagenta", "You")]
-    parts: list[tuple[str, str]] = []
-    branch = _current_branch()
-    if branch:
-        parts.append(("ansibrightblack", _short_branch(branch)))
+_MODEL_MAX = 28
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _ctx_pct(ctx_used: int, ctx_total: int) -> float:
+    return (ctx_used / ctx_total) if ctx_total > 0 else 0.0
+
+
+def _ctx_color(ctx_used: int, ctx_total: int) -> str:
+    pct = _ctx_pct(ctx_used, ctx_total)
+    if pct < 0.70:
+        return "green"
+    if pct < 0.85:
+        return "yellow"
+    return "red"
+
+
+def _history_turns(history: list[dict]) -> int:
+    return sum(1 for msg in history if msg.get("role") == "user")
+
+
+def _mode_labels(state: State) -> list[str]:
+    labels: list[str] = []
     if state.get("plan_mode"):
-        parts.append(("ansiyellow", "plan"))
+        labels.append("plan")
     if state.get("debug"):
-        parts.append(("ansimagenta", "debug"))
-    if parts:
-        out.append(("ansibrightblack", " ["))
-        for i, (style, text) in enumerate(parts):
+        labels.append("debug")
+    return labels
+
+
+def build_prompt(state: State) -> FormattedText:
+    """A short prompt keeps the input line focused; status lives in the
+    bottom toolbar instead of competing with what the user is typing."""
+    return FormattedText(
+        [
+            ("bold ansimagenta", "You"),
+            ("ansibrightblack", " › "),
+        ]
+    )
+
+
+def build_bottom_toolbar(state: State) -> FormattedText:
+    """Persistent prompt-time status line: model, branch, context pressure,
+    and active modes. This stays visible while the user types, unlike the
+    post-turn stats printed into scrollback."""
+    provider = get_active_provider()
+    branch = _current_branch()
+    ctx_used = state.get("ctx_used", 0)
+    ctx_total = NUM_CTX
+    ctx_color = _ctx_color(ctx_used, ctx_total)
+
+    out: list[tuple[str, str]] = []
+
+    def add_text(style: str, text: str) -> None:
+        out.append((style, text))
+
+    def add_sep() -> None:
+        if out:
+            add_text("ansibrightblack", " · ")
+
+    def add_pair(label: str, value: str, value_style: str = "white") -> None:
+        add_sep()
+        add_text("ansibrightblack", f"{label} ")
+        add_text(value_style, value)
+
+    add_pair("model", f"{provider.name}:{_clip(provider.model, _MODEL_MAX)}")
+    if branch:
+        add_pair("branch", _short_branch(branch))
+    add_pair(
+        "ctx",
+        f"{ctx_used:,}/{ctx_total:,} {_ctx_pct(ctx_used, ctx_total):.0%}",
+        ctx_color,
+    )
+
+    modes = _mode_labels(state)
+    if modes:
+        add_sep()
+        for i, mode in enumerate(modes):
             if i > 0:
-                out.append(("ansibrightblack", " · "))
-            out.append((style, text))
-        out.append(("ansibrightblack", "]"))
-    out.append(("ansibrightblack", " › "))
+                add_text("ansibrightblack", " ")
+            style = "ansiyellow" if mode == "plan" else "ansimagenta"
+            add_text(style, mode)
+    else:
+        add_pair("mode", "normal", "ansibrightblack")
+
     return FormattedText(out)
 
 
@@ -106,7 +174,7 @@ class SlashCompleter(Completer):
                 yield Completion(cmd, start_position=-len(buf))
 
 
-def build_session(commands: dict) -> PromptSession:
+def build_session(commands: dict, state: State) -> PromptSession:
     """Construct the REPL's single PromptSession. Held for the lifetime
     of the process so input history persists across turns without hitting
     disk on every prompt."""
@@ -114,6 +182,7 @@ def build_session(commands: dict) -> PromptSession:
         history=FileHistory(INPUT_HISTORY_FILE),
         completer=SlashCompleter(commands),
         complete_while_typing=False,
+        bottom_toolbar=lambda: build_bottom_toolbar(state),
     )
 
 
@@ -123,11 +192,39 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
     (auto-trim fires). Thresholds intentionally above trim_history's 0.8
     bound so a fresh session with a large system prompt doesn't flash
     yellow on turn 1."""
-    pct = ctx_used / ctx_total
-    if pct < 0.70:
-        color = "green"
-    elif pct < 0.85:
-        color = "yellow"
-    else:
-        color = "red"
+    pct = _ctx_pct(ctx_used, ctx_total)
+    color = _ctx_color(ctx_used, ctx_total)
     return f"[dim]ctx[/dim] [{color}]{pct:.0%}[/{color}]"
+
+
+def build_turn_header(state: State) -> str:
+    """Compact turn preface so each run reads as a single unit in the log."""
+    provider = get_active_provider()
+    turn_no = _history_turns(state["history"]) + 1
+    parts = [
+        f"[bold]Turn {turn_no}[/bold]",
+        f"[dim]{provider.name}:{_clip(provider.model, _MODEL_MAX)}[/dim]",
+        f"[dim]{state['ctx_used']:,}/{NUM_CTX:,}[/dim] {ctx_tag(state['ctx_used'], NUM_CTX)}",
+    ]
+    branch = _current_branch()
+    if branch:
+        parts.insert(1, f"[dim]{_short_branch(branch)}[/dim]")
+    for mode in _mode_labels(state):
+        color = "yellow" if mode == "plan" else "magenta"
+        parts.append(f"[{color}]{mode}[/{color}]")
+    return " [dim]·[/dim] ".join(parts)
+
+
+def build_turn_footer(ctx_used: int, ctx_total: int, elapsed_s: float, stats: dict) -> str:
+    """Post-turn stats grouped into one footer line."""
+    parts = [
+        f"[dim]{ctx_used:,}/{ctx_total:,}[/dim] {ctx_tag(ctx_used, ctx_total)}",
+        f"[dim]{elapsed_s:.1f}s[/dim]",
+    ]
+    ttft_ms = stats.get("ttft_ms")
+    if ttft_ms is not None:
+        parts.append(f"[dim]ttft {ttft_ms}ms[/dim]")
+    tok_per_s = stats.get("tok_per_s")
+    if tok_per_s:
+        parts.append(f"[dim]{tok_per_s:.0f} tok/s[/dim]")
+    return " [dim]·[/dim] ".join(parts)

@@ -4,8 +4,6 @@
 
 A hand-rolled agent harness built for **learning how agent harnesses work**. The goal is to understand — by building — what Claude Code, Codex, Cursor, etc. do internally: tool calling, the chat/tool/chat cycle, history management, permissioning, and context budgeting.
 
-Do NOT use emojis in responses.
-
 This is not meant to be production software. When explaining or suggesting changes, prefer clarity and pedagogy over cleverness. Show the mechanism, don't hide it behind abstractions.
 
 **Stack:** Python · `prompt_toolkit` + `rich` · provider adapters (Ollama by default; also OpenAI-compatible, OpenAI, Anthropic, DeepSeek) · local tools (`read_file`, `edit_file`, `glob`, `grep`, `bash`, `git_checkout`, `spawn_subagent`, etc.)

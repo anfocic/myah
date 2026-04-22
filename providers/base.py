@@ -57,6 +57,18 @@ class Provider(Protocol):
         num_ctx: int,
     ) -> tuple[str, Usage]: ...
 
+    def count_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> int:
+        """Return the exact input-token count the provider would bill for
+        sending `messages` + `tools`. Adapters raise ProviderError on any
+        failure (network, auth, unreachable); callers are expected to catch
+        and fall back to a local estimate so /context and /profile never
+        hard-fail."""
+        ...
+
 
 class ProviderError(Exception):
     """Anything the adapter couldn't translate: connect refused, auth failure,

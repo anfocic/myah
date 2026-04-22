@@ -9,6 +9,8 @@ the httpx stack at import (and vice versa)."""
 
 import os
 
+from env import load_dotenv
+
 from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 
 # Default base URLs for the hosted providers. Overridable via env so
@@ -25,6 +27,7 @@ _DEFAULT_MODELS = {
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-chat",
+    "google": "gemma-4-e4b",
 }
 
 
@@ -39,6 +42,8 @@ def build_provider(name: str, model: str) -> Provider:
     each provider's dedicated API-key env var. `anthropic` has its own
     native adapter because the Messages API differs in message shape,
     streaming events, and tool schema."""
+    load_dotenv()
+
     if name == "ollama":
         from config import OLLAMA_BASE_URL
 
@@ -65,11 +70,13 @@ def build_provider(name: str, model: str) -> Provider:
         # reasoning_effort plumbing, that motivates a separate adapter.
         from .openai_compat import OpenAICompatProvider
 
-        return OpenAICompatProvider(
+        provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENAI_BASE_URL", _OPENAI_BASE_URL),
             api_key=os.environ.get("OPENAI_API_KEY", ""),
         )
+        provider.name = "openai"
+        return provider
 
     if name == "anthropic":
         from .anthropic_adapter import AnthropicProvider
@@ -87,20 +94,39 @@ def build_provider(name: str, model: str) -> Provider:
         # for `deepseek-reasoner`) need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
-        return OpenAICompatProvider(
+        provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("DEEPSEEK_BASE_URL", _DEEPSEEK_BASE_URL),
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         )
+        provider.name = "deepseek"
+        return provider
+
+    if name == "google":
+        # Google exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when Gemini-specific features need bespoke handling.
+        from .openai_compat import OpenAICompatProvider
+
+        provider = OpenAICompatProvider(
+            model=model,
+            base_url=os.environ.get(
+                "GOOGLE_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            ),
+            api_key=os.environ.get("GOOGLE_API_KEY", ""),
+        )
+        provider.name = "google"
+        return provider
 
     raise ValueError(
         f"unknown provider: {name!r} "
-        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek)"
+        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek, google)"
     )
 
 
 SUPPORTED_PROVIDERS = frozenset(
-    {"ollama", "openai-compat", "openai", "anthropic", "deepseek"}
+    {"ollama", "openai-compat", "openai", "anthropic", "deepseek", "google"}
 )
 
 
@@ -115,10 +141,12 @@ def get_provider() -> Provider:
 
     if MODEL_PROVIDER == "ollama":
         from config import OLLAMA_MODEL
+
         return build_provider("ollama", OLLAMA_MODEL)
 
     if MODEL_PROVIDER == "openai-compat":
         from config import OPENAI_COMPAT_MODEL
+
         return build_provider("openai-compat", OPENAI_COMPAT_MODEL)
 
     if MODEL_PROVIDER == "openai":
@@ -137,6 +165,12 @@ def get_provider() -> Provider:
         return build_provider(
             "deepseek",
             os.environ.get("DEEPSEEK_MODEL", _DEFAULT_MODELS["deepseek"]),
+        )
+
+    if MODEL_PROVIDER == "google":
+        return build_provider(
+            "google",
+            os.environ.get("GOOGLE_MODEL", _DEFAULT_MODELS["google"]),
         )
 
     raise ValueError(
@@ -171,6 +205,7 @@ def list_ollama_models() -> list[str]:
         import ollama
 
         from config import OLLAMA_BASE_URL
+
         client = ollama.Client(host=OLLAMA_BASE_URL) if OLLAMA_BASE_URL else ollama
         resp = client.list()
         # ollama 0.3+: resp is a ListResponse dataclass with .models[*].model
