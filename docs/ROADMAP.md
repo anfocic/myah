@@ -2,7 +2,7 @@
 
 Gap analysis: what this harness is missing to feel like Claude Code, ordered by pedagogy / payoff ratio.
 
-Each item is a self-contained learning milestone. Pick one, ship a PR, update `CONCEPTS.md`.
+Each item is a self-contained learning milestone. Pick one, ship a PR, update the docs that match the change: `HANDBOOK.md` for stable architecture, `BUILD_NOTES.md` for the chronological story.
 
 ---
 
@@ -60,7 +60,7 @@ These are the things keeping Mia from feeling like a "complete" pedagogical harn
 | Test coverage → 70%+ floor | Current floor: 40% (coverage gate). Untested: provider adapters (need network mocking via `respx` / `httpx_mock`), tool implementations (need filesystem fixtures + subprocess stubs). Ratchet the `fail_under` up as modules get mocked coverage | Medium | |
 | Observability — per-turn trace + cost | `logs/agent.jsonl` captures usage already, but there's no viewer, no cost accounting, no cross-turn diff. A `/trace` slash command or a tiny `scripts/trace-viewer.py` that replays a session with token breakdowns would teach the operational side of running an agent | Small-medium | |
 | Restore streaming markdown rendering | The prompt_toolkit refactor (§42) dropped `rich.live.Live`. Streaming is now plain text. Two ways to fix: (a) promote the REPL to a full `prompt_toolkit.Application` with a managed log region; (b) render markdown only at end-of-stream (lose the "feels alive" token trickle). Decide, document, ship. The current state is a regression | Medium-large | |
-| Diagrams in CONCEPTS.md | Zero diagrams today. At least three would pay for themselves: (1) agent loop sequence (user → build_messages → stream → if tool_calls → execute → loop → else return), (2) context lifecycle (trim → microcompact → compact → rewind), (3) control plane / data plane split. Use mermaid blocks so they render on GitHub | Small | |
+| Diagrams in HANDBOOK.md | Zero diagrams today. At least three would pay for themselves: (1) agent loop sequence (user → build_messages → stream → if tool_calls → execute → loop → else return), (2) context lifecycle (trim → microcompact → compact → rewind), (3) control plane / data plane split. Use mermaid blocks so they render on GitHub | Small | |
 | Subagents | Already in Tier 2. Duplicated here because it's load-bearing for the 9/10 narrative: a harness that can't spawn itself isn't teaching hierarchical agents | Medium | Shipped |
 | Hooks | Already in Tier 2. User-configurable pre/post tool hooks teach extensibility and mirror Claude Code's hooks config | Small | |
 
@@ -69,5 +69,6 @@ These are the things keeping Mia from feeling like a "complete" pedagogical harn
 ## How to use this file
 
 - Pick an item, create a branch, ship a PR. Update the checkbox here when it merges.
-- If a feature reveals a new concept while you build it, add it to `CONCEPTS.md`.
+- If a feature changes the stable architecture, add it to `HANDBOOK.md`.
+- If a feature produces a useful build-story lesson, add it to `BUILD_NOTES.md`.
 - If a feature produces a "surprise I want to tell someone about" moment, mine it for `BLOG.md`.

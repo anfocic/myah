@@ -25,7 +25,7 @@ def test_supported_providers_matches_factory_branches():
     parser silently stops recognizing that prefix. This test locks them
     together."""
     assert SUPPORTED_PROVIDERS == {
-        "ollama", "openai-compat", "openai", "anthropic", "deepseek",
+        "ollama", "openai-compat", "openai", "anthropic", "deepseek", "google",
     }
 
 
@@ -33,7 +33,7 @@ def test_build_openai_uses_first_party_base_and_api_key():
     with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
         p = build_provider("openai", "gpt-4.1-mini")
     assert isinstance(p, OpenAICompatProvider)
-    assert p.name == "openai-compat"  # adapter class-level name
+    assert p.name == "openai"
     assert p.model == "gpt-4.1-mini"
     assert p._base == "https://api.openai.com/v1"
     assert p._headers.get("Authorization") == "Bearer sk-test"
@@ -43,9 +43,20 @@ def test_build_deepseek_uses_deepseek_host_and_api_key():
     with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "ds-test"}, clear=False):
         p = build_provider("deepseek", "deepseek-chat")
     assert isinstance(p, OpenAICompatProvider)
+    assert p.name == "deepseek"
     assert p.model == "deepseek-chat"
     assert p._base == "https://api.deepseek.com/v1"
     assert p._headers.get("Authorization") == "Bearer ds-test"
+
+
+def test_build_google_uses_gemini_host_and_api_key():
+    with patch.dict(os.environ, {"GOOGLE_API_KEY": "g-test"}, clear=False):
+        p = build_provider("google", "gemini-2.5-flash")
+    assert isinstance(p, OpenAICompatProvider)
+    assert p.name == "google"
+    assert p.model == "gemini-2.5-flash"
+    assert p._base == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert p._headers.get("Authorization") == "Bearer g-test"
 
 
 def test_build_anthropic_requires_api_key():

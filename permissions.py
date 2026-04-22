@@ -6,14 +6,26 @@ the specific call. This teaches the same trust model Claude Code uses — the
 model proposes; the human allows.
 """
 import json
+from pathlib import Path
 
 from prompt_toolkit.shortcuts import prompt as pt_prompt
+from rich.panel import Panel
+from rich.syntax import Syntax
+
+from display import build_unified_diff
 
 SENSITIVE_TOOLS = {"write_file", "edit_file", "bash", "git_checkout"}
 _session_allowed: set[str] = set()
 
 
 NEVER_TRUNCATE_KEYS = {"path", "command"}
+_PREVIEW_LINES = 12
+_RISK_LABELS = {
+    "bash": "shell command",
+    "edit_file": "file edit",
+    "write_file": "file write",
+    "git_checkout": "git state change",
+}
 
 
 def _render_args(args) -> str:
@@ -35,21 +47,121 @@ def _render_args(args) -> str:
     return json.dumps(d, indent=2, default=str)
 
 
-def check_permission(console, name: str, args) -> bool:
+def _tool_id(meta: dict | None) -> str:
+    return str((meta or {}).get("tool_id", ""))
+
+
+def _content_stats(content: str) -> tuple[int, int]:
+    n_bytes = len(content.encode("utf-8"))
+    n_lines = content.count("\n") + (1 if content else 0)
+    return n_bytes, n_lines
+
+
+def _content_preview(content: str, *, max_lines: int = _PREVIEW_LINES) -> str:
+    lines = content.splitlines()
+    if len(lines) <= max_lines:
+        return content
+    preview = "\n".join(lines[:max_lines])
+    return preview + f"\n... ({len(lines) - max_lines} more lines)"
+
+
+def _print_permission_preview(console, name: str, args) -> None:
+    if name == "bash":
+        command = str(args.get("command", ""))
+        cwd = str(args.get("cwd", "."))
+        timeout = int(args.get("timeout", 30))
+        console.print(f"[dim]cwd[/dim] {cwd} [dim]· timeout[/dim] {timeout}s")
+        console.print(
+            Panel(
+                Syntax(command, "bash", theme="ansi_dark", word_wrap=True),
+                title="[dim]command[/dim]",
+                border_style="dim",
+                padding=(0, 1),
+            )
+        )
+        return
+
+    if name == "edit_file":
+        path = str(args.get("path", ""))
+        replace_all = bool(args.get("replace_all", False))
+        old = str(args.get("old_string", ""))
+        new = str(args.get("new_string", ""))
+        mode = "replace all" if replace_all else "single replace"
+        console.print(f"[dim]path[/dim] {path} [dim]· mode[/dim] {mode}")
+        diff = build_unified_diff(path, old, new, context=1)
+        if diff.strip():
+            console.print(
+                Panel(
+                    Syntax(diff, "diff", theme="ansi_dark", word_wrap=True),
+                    title="[dim]diff preview[/dim]",
+                    border_style="dim",
+                    padding=(0, 1),
+                )
+            )
+        else:
+            console.print("[dim]No textual diff to preview.[/dim]")
+        return
+
+    if name == "write_file":
+        path = str(args.get("path", ""))
+        content = str(args.get("content", ""))
+        n_bytes, n_lines = _content_stats(content)
+        line_label = "line" if n_lines == 1 else "lines"
+        console.print(
+            f"[dim]path[/dim] {path} [dim]· size[/dim] {n_bytes} bytes "
+            f"[dim]· {n_lines} {line_label}[/dim]"
+        )
+        preview = _content_preview(content)
+        if preview:
+            lexer = "bash" if Path(path).suffix == ".sh" else "text"
+            console.print(
+                Panel(
+                    Syntax(preview, lexer, theme="ansi_dark", word_wrap=True),
+                    title="[dim]content preview[/dim]",
+                    border_style="dim",
+                    padding=(0, 1),
+                )
+            )
+        return
+
+    if name == "git_checkout":
+        console.print(f"[dim]branch[/dim] {args.get('branch', '')}")
+        return
+
+    console.print(f"[dim]{_render_args(args)}[/dim]")
+
+
+def _allow_key(name: str, args) -> str:
+    """Session-scoped approval key for one exact tool call.
+
+    "Always allow" should approve this specific invocation shape, not every
+    future call to the whole tool family (e.g. every `bash` command)."""
+    try:
+        encoded = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        encoded = repr(args)
+    return f"{name}:{encoded}"
+
+
+def check_permission(console, name: str, args, *, meta: dict | None = None) -> bool:
     """Return True if the tool may run. Prompts the user for sensitive tools.
 
     The prompt uses `prompt_toolkit.shortcuts.prompt` directly — a one-shot
     session that slots cleanly under `patch_stdout` because the outer
     PromptSession has already returned control to the agent loop. No spinner
     to stop/restart now that rich.Status is retired (§TUI refactor)."""
-    if name not in SENSITIVE_TOOLS or name in _session_allowed:
+    key = _allow_key(name, args)
+    if name not in SENSITIVE_TOOLS or key in _session_allowed:
         return True
 
+    tool_id = _tool_id(meta)
+    risk = _RISK_LABELS.get(name, "sensitive action")
+    tool_prefix = f"[dim]{tool_id}[/dim] " if tool_id else ""
     console.print(
-        f"\n[bold yellow]Permission requested[/bold yellow] [dim]for[/dim] "
-        f"[bold]{name}[/bold]"
+        f"\n[bold yellow]Permission requested[/bold yellow] "
+        f"{tool_prefix}[dim]for[/dim] [bold]{name}[/bold] [dim]· {risk}[/dim]"
     )
-    console.print(f"[dim]{_render_args(args)}[/dim]")
+    _print_permission_preview(console, name, args)
     try:
         choice = pt_prompt("Allow? [y]es / [n]o / [a]lways › ").strip().lower()
     except (KeyboardInterrupt, EOFError):
@@ -57,6 +169,6 @@ def check_permission(console, name: str, args) -> bool:
         return False
 
     if choice.startswith("a"):
-        _session_allowed.add(name)
+        _session_allowed.add(key)
         return True
     return choice.startswith("y")

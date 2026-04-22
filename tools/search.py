@@ -21,6 +21,8 @@ def _iter_files(root: Path, glob: str | None):
             continue
         if any(_should_skip_dir(part) for part in p.relative_to(root).parts[:-1]):
             continue
+        if not is_within_cwd(str(p)):
+            continue
         yield p
 
 
@@ -125,6 +127,8 @@ def glob(pattern: str, path: str = "."):
             continue
         rel_parts = p.relative_to(root).parts
         if any(_should_skip_dir(part) for part in rel_parts[:-1]):
+            continue
+        if not is_within_cwd(str(p)):
             continue
         matches.append("/".join(rel_parts))
         if len(matches) >= MAX_RESULTS:

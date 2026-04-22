@@ -98,6 +98,42 @@ class AnthropicProvider(Provider):
         except httpx.TimeoutException as e:
             raise ProviderError(f"anthropic timeout: {e}") from e
 
+    def count_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> int:
+        """Anthropic exposes POST /v1/messages/count_tokens — same request
+        body as /v1/messages minus max_tokens, returns {input_tokens: N}.
+        Free (not billed), GA since 2024. One network round-trip."""
+        system, translated = _translate_messages(messages)
+        payload: dict = {
+            "model": self.model,
+            "messages": translated,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = _translate_tools(tools)
+
+        try:
+            r = self._client.post(
+                f"{self._base}/messages/count_tokens",
+                json=payload,
+                headers=self._headers,
+            )
+        except httpx.ConnectError as e:
+            raise ProviderError(f"anthropic unreachable: {e}") from e
+        if r.status_code >= 400:
+            raise ProviderError(f"HTTP {r.status_code}: {r.text[:500]}")
+        data = r.json()
+        tokens = data.get("input_tokens")
+        if tokens is None:
+            raise ProviderError(
+                f"anthropic count_tokens missing input_tokens: {r.text[:200]}"
+            )
+        return int(tokens)
+
     def chat(self, messages: list[dict], num_ctx: int) -> tuple[str, Usage]:
         """Non-streaming one-shot. Used by the summarize-dropped-turns path
         in agent/context; everywhere else goes through stream_chat."""
