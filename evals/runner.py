@@ -62,6 +62,11 @@ class TaskResult:
     provider: str
     model: str
     error: str | None = None
+    # Full chain-of-thought from reasoning-capable models (qwen3 via LM
+    # Studio, DeepSeek R1, ...). "" when the model doesn't emit any. Kept
+    # in the JSONL so post-hoc analysis can see *why* a task passed/failed
+    # when the visible `content` is short (e.g. qwen3 saying "Done.").
+    reasoning: str = ""
 
 
 def discover_tasks() -> list[dict]:
@@ -265,6 +270,7 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
             provider=provider_name,
             model=model_name,
             error=error,
+            reasoning=stats.get("reasoning", ""),
         )
     finally:
         # Always restore cwd — subsequent tasks need a known root. Skip
@@ -304,6 +310,7 @@ def _write_results_jsonl(results: list[TaskResult]) -> Path:
                 "error": r.error,
                 "trace": r.trace,
                 "content": r.content,
+                "reasoning": r.reasoning,
             }) + "\n")
     return path
 

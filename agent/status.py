@@ -36,9 +36,17 @@ def log_response(
     content: str,
     tool_calls: list,
     ttft_ms: int | None = None,
+    reasoning: str = "",
 ) -> None:
     """Append a single-line JSON record per turn for post-hoc study. Works
-    for every provider because it takes normalized `Usage` + `ToolCall`s."""
+    for every provider because it takes normalized `Usage` + `ToolCall`s.
+
+    `reasoning` is the chain-of-thought that thinking-capable models
+    (qwen3 via LM Studio, DeepSeek R1, ...) surface separately from the
+    visible assistant reply. It's not part of message history, but logging
+    it here lets post-hoc analysis see what the model was doing when a
+    turn looks mysteriously short in `content`.
+    """
     LOG_FILE.parent.mkdir(exist_ok=True)
     provider = get_active_provider()
     entry = {
@@ -49,6 +57,7 @@ def log_response(
         "completion_tokens": usage.completion_tokens if usage else None,
         "ttft_ms": ttft_ms,
         "content": content,
+        "reasoning": reasoning,
         "tool_calls": [
             {"name": tc.name, "arguments": tc.arguments} for tc in tool_calls
         ],
