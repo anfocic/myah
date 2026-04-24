@@ -27,7 +27,7 @@ agent/
   status.py     — status text + JSONL response logging
 
 repl/
-  commands.py   — slash commands (/help, /context, /plan, /debug, /retry, /compact, /rewind, /model)
+  commands.py   — slash commands (/help, /context, /plan, /debug, /retry, /compact, /rewind, /model, /profile, /eval)
   tool_registry.py — tool schemas + dispatcher factory
   persistence.py — session save/load
   state.py      — typed REPL state

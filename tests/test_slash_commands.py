@@ -99,6 +99,64 @@ def test_profile_falls_back_on_provider_error(state, monkeypatch):
     assert handle_slash("/profile", state) is True
 
 
+def test_eval_list_invokes_list_tasks(state, monkeypatch):
+    """/eval list should call evals.runner.list_tasks and not run_suite."""
+    calls = {"list": 0, "run": 0}
+
+    def fake_list():
+        calls["list"] += 1
+        return ["find_string", "edit_rename"]
+
+    def fake_run(**kwargs):
+        calls["run"] += 1
+        return []
+
+    monkeypatch.setattr("evals.runner.list_tasks", fake_list)
+    monkeypatch.setattr("evals.runner.run_suite", fake_run)
+    assert handle_slash("/eval list", state) is True
+    assert calls == {"list": 1, "run": 0}
+
+
+def test_eval_no_arg_runs_full_suite(state, monkeypatch):
+    """/eval with no args should call run_suite with task_ids=None."""
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    class FakeProvider:
+        name = "fake"
+        model = "fake-m"
+
+    monkeypatch.setattr("evals.runner.run_suite", fake_run)
+    monkeypatch.setattr(
+        "repl.commands.get_active_provider", lambda: FakeProvider()
+    )
+    assert handle_slash("/eval", state) is True
+    assert captured["task_ids"] is None
+
+
+def test_eval_with_task_ids_passes_subset(state, monkeypatch):
+    """/eval find_string edit_rename should pass the parsed list through."""
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    class FakeProvider:
+        name = "fake"
+        model = "fake-m"
+
+    monkeypatch.setattr("evals.runner.run_suite", fake_run)
+    monkeypatch.setattr(
+        "repl.commands.get_active_provider", lambda: FakeProvider()
+    )
+    assert handle_slash("/eval find_string edit_rename", state) is True
+    assert captured["task_ids"] == ["find_string", "edit_rename"]
+
+
 def test_profile_marginal_rows_from_provider_counts(state, monkeypatch):
     """With a fake provider that counts content characters (one token per
     char), verify the marginal-diff arithmetic: each row = full_notools -

@@ -18,6 +18,10 @@ class State(TypedDict):
     debug: bool
     snapshots: deque
     _retry_input: NotRequired[str]
+    # Per-turn metrics captured at end of each run_agent call. `/stats`
+    # renders these on demand so the REPL doesn't have to print a footer
+    # line on every turn. Absent before the first turn completes.
+    last_turn: NotRequired[dict]
 
 
 def new_state() -> State:

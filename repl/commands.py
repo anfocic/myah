@@ -50,9 +50,7 @@ def _next_turn_messages(state: State) -> list[dict]:
     return [{"role": "system", "content": sys_prompt}] + list(state["history"])
 
 
-def _count_or_estimate(
-    provider, messages: list[dict], tools: list[dict] | None
-) -> tuple[int, str]:
+def _count_or_estimate(provider, messages: list[dict], tools: list[dict] | None) -> tuple[int, str]:
     """Try the provider's exact tokenizer; on any failure fall back to the
     char/4 estimator so /context and /profile never hard-fail.
 
@@ -81,6 +79,27 @@ def cmd_context(state: State, arg: str = "") -> None:
         f"[bold]plan mode:[/bold] {plan}\n"
         f"[bold]tools:[/bold] {', '.join(TOOL_NAMES)}"
     )
+
+
+def cmd_stats(state: State, arg: str = "") -> None:
+    """Show the last turn's metrics. Captured by main.py into state["last_turn"]
+    now that the per-turn footer was dropped from the REPL output."""
+    last = state.get("last_turn")
+    if not last:
+        console.print("[dim]↳ no completed turn yet[/dim]")
+        return
+    tag = ctx_tag(last["ctx_used"], NUM_CTX)
+    parts = [
+        f"[bold]ctx:[/bold] {last['ctx_used']:,}/{NUM_CTX:,} {tag}",
+        f"[bold]wall:[/bold] {last['elapsed_s']:.1f}s",
+    ]
+    if last.get("ttft_ms") is not None:
+        parts.append(f"[bold]ttft:[/bold] {last['ttft_ms']}ms")
+    if last.get("tok_per_s"):
+        parts.append(f"[bold]rate:[/bold] {last['tok_per_s']:.0f} tok/s")
+    if last.get("completion_tokens"):
+        parts.append(f"[bold]gen:[/bold] {last['completion_tokens']} tok")
+    console.print(" · ".join(parts))
 
 
 def cmd_plan(state: State, arg: str = "") -> None:
@@ -131,8 +150,7 @@ def cmd_compact(state: State, arg: str = "") -> None:
     if summarized is new_history:
         # apply_summary returns its input verbatim when summarization fails
         console.print(
-            f"[dim]↳ dropped {n_turns} turn(s) "
-            "(summary failed — kept last 2 turns only)[/dim]"
+            f"[dim]↳ dropped {n_turns} turn(s) (summary failed — kept last 2 turns only)[/dim]"
         )
     else:
         console.print(f"[dim]↳ compacted {n_turns} turn(s) into summary[/dim]")
@@ -161,9 +179,7 @@ def cmd_rewind(state: State, arg: str = "") -> None:
         snapshots.pop()
     state["ctx_used"] = 0
     turns = len(state["history"]) // 2
-    console.print(
-        f"[dim]↳ rewound {n} turn(s) ({turns} turn(s) remain)[/dim]"
-    )
+    console.print(f"[dim]↳ rewound {n} turn(s) ({turns} turn(s) remain)[/dim]")
 
 
 _PROFILE_BAR_WIDTH = 28
@@ -196,10 +212,7 @@ def _blank_content(messages: list[dict], role: str) -> list[dict]:
     given role. Used for marginal-diff counting: replacing content keeps the
     role sequence valid (Anthropic rejects sequences with missing roles)
     while zeroing out that role's content-token contribution."""
-    return [
-        ({**m, "content": ""} if m.get("role") == role else m)
-        for m in messages
-    ]
+    return [({**m, "content": ""} if m.get("role") == role else m) for m in messages]
 
 
 def cmd_profile(state: State, arg: str = "") -> None:
@@ -258,9 +271,37 @@ def cmd_profile(state: State, arg: str = "") -> None:
         f"[bold]Context profile[/bold] [dim]· {provider.model} "
         f"({provider.name}) · NUM_CTX={NUM_CTX:,}[/dim]"
     )
-    console.print(
-        Panel("\n".join(lines), title=title, border_style="dim", padding=(1, 2))
-    )
+    console.print(Panel("\n".join(lines), title=title, border_style="dim", padding=(1, 2)))
+
+
+def cmd_eval(state: State, arg: str = "") -> None:
+    """Run the eval suite against the active provider/model from inside the
+    REPL. Mirrors `scripts/run_evals.py` but scoped to the current session.
+
+    Arg shapes:
+        /eval                         — run every task
+        /eval list                    — list task ids, don't run
+        /eval find_string             — run one task
+        /eval find_string edit_rename — run a subset (space-separated)
+
+    The active provider is used. Swap with /model first if you want to
+    compare models. `run_suite` saves/restores the active provider itself,
+    so the REPL session isn't disturbed if a task pins a different one."""
+    # Imported lazily so the eval deps (rich.table, task modules, fixtures)
+    # only load when the user actually runs /eval.
+    from evals.runner import list_tasks, run_suite
+
+    parts = arg.strip().split()
+    if parts and parts[0] == "list":
+        for tid in list_tasks():
+            console.print(f"  {tid}")
+        return
+
+    task_ids = parts or None
+    provider = get_active_provider()
+    scope = f"{len(task_ids)} task(s)" if task_ids else "full suite"
+    console.print(f"[dim]↳ running {scope} on {provider.model} ({provider.name})...[/dim]")
+    run_suite(task_ids=task_ids, console=console)
 
 
 def cmd_model(state: State, arg: str = "") -> None:
@@ -277,9 +318,7 @@ def cmd_model(state: State, arg: str = "") -> None:
     """
     current = get_active_provider()
     if not arg.strip():
-        console.print(
-            f"[bold]current:[/bold] {current.model} [dim]({current.name})[/dim]"
-        )
+        console.print(f"[bold]current:[/bold] {current.model} [dim]({current.name})[/dim]")
         tags = list_ollama_models()
         if tags:
             console.print("[bold]ollama (local):[/bold]")
@@ -287,12 +326,8 @@ def cmd_model(state: State, arg: str = "") -> None:
                 marker = "[cyan]*[/cyan] " if t == current.model else "  "
                 console.print(f"  {marker}{t}")
         else:
-            console.print(
-                "[dim]↳ no ollama daemon reachable (or no models pulled)[/dim]"
-            )
-        console.print(
-            "[dim]↳ swap with /model <name> or /model <provider>:<name>[/dim]"
-        )
+            console.print("[dim]↳ no ollama daemon reachable (or no models pulled)[/dim]")
+        console.print("[dim]↳ swap with /model <name> or /model <provider>:<name>[/dim]")
         return
 
     # Parse "<provider>:<model>" vs plain "<model>" (keep current provider).
@@ -323,10 +358,7 @@ def cmd_model(state: State, arg: str = "") -> None:
         return
 
     set_active_provider(new_provider)
-    console.print(
-        f"[dim]↳ switched to {model} "
-        f"\\[{provider_name}] (takes effect next turn)[/dim]"
-    )
+    console.print(f"[dim]↳ switched to {model} \\[{provider_name}] (takes effect next turn)[/dim]")
 
 
 SLASH_COMMANDS: dict = {
@@ -340,6 +372,8 @@ SLASH_COMMANDS: dict = {
     "/rewind": (cmd_rewind, "undo N turns (default 1) via in-memory snapshots"),
     "/model": (cmd_model, "list or swap the active model (e.g. /model qwen2.5:14b)"),
     "/profile": (cmd_profile, "per-role token breakdown of the next turn's prompt"),
+    "/stats": (cmd_stats, "show the last turn's ctx/wall/ttft/rate"),
+    "/eval": (cmd_eval, "run the eval suite (`/eval list` to list, `/eval <id>...` for a subset)"),
 }
 
 
