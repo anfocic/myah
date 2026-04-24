@@ -228,6 +228,9 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
         stats = result_box.get("stats", {}) or {}
         ctx_used = result_box.get("ctx_used", 0)
         error = result_box.get("error")
+        provider_error = stats.get("provider_error")
+        if provider_error and error is None:
+            error = f"provider_error: {provider_error}"
 
         bundle = {
             "content": content,
@@ -382,6 +385,15 @@ def run_suite(
             console.print(f"[dim]→ running {task['id']}...[/dim]")
             r = _run_one(task, cli_provider, cli_model)
             results.append(r)
+            if r.timeout:
+                remaining = len(tasks) - len(results)
+                if remaining:
+                    console.print(
+                        "[yellow]↳ stopping eval suite after timeout; "
+                        f"{remaining} task(s) skipped because the timed-out "
+                        "worker may still be running[/yellow]"
+                    )
+                break
     finally:
         set_active_provider(saved_provider)
 
