@@ -1070,6 +1070,60 @@ See: `providers/anthropic_adapter.py`, `providers/__init__.py` (factory + `SUPPO
 
 ---
 
+## 45. Evals — `run_agent` as a library, graded by deterministic checks
+
+The agent loop had a production path (the REPL in `main.py`) and a test path (`FakeProvider` in `tests/test_integration.py`), but nothing in between — no way to ask *"does this model solve this task, and at what cost?"*. Without that, a harness change or prompt tweak was a vibes check. You'd poke at it in the REPL, feel the difference, merge.
+
+An eval harness is the missing third caller of `run_agent`: a loop that drives the agent through a canned task, captures what happened, and grades the outcome deterministically. The subagent tool (§43) already proves `run_agent` works as a library; evals are the second proof. If it survives two external callers with different needs, the signature has earned its keep.
+
+### Task shape
+
+Each task is a plain Python module under `evals/tasks/` exporting a `TASK` dict:
+
+```python
+TASK = {
+    "id": "find_string",
+    "prompt": "Find every occurrence of TOOL_RESULT_MAX_BYTES...",
+    "setup": {"fs": None},           # or "fs": "edit_rename" to copy a fixture
+    "provider": None,                # or ("anthropic", "claude-sonnet-4-6")
+    "permission": "allow_all",       # or "readonly_only", "deny_all"
+    "limits": {"max_tool_calls": 6, "wall_timeout_s": 90},
+    "checks": [
+        {"type": "tool_trace", "must_call": ["grep"], "must_not_call": ["bash"]},
+        {"type": "content_regex", "pattern": r"config\.py"},
+    ],
+}
+```
+
+Python modules over YAML because inline callables are useful (the `python` check type takes a `fn`) and there's no dep to add.
+
+### Three grading dimensions
+
+1. **Tool-use hygiene** — `tool_trace` check asserts the model called the right tools and didn't reach for bash-everything. Captured via the loop's existing `on_tool_start` / `on_tool_end` callbacks.
+2. **Content correctness** — `content_regex` / `content_substr` against the final assistant message. Brittle, but fast and honest: a real answer mentions the right files.
+3. **Filesystem side effects** — `fs_file_contains` / `fs_file_equals` over the task's working dir. Tasks that edit files run in a tempdir copy of an `evals/fixtures/<name>/` directory, so a broken model can't smash the real repo.
+
+The deliberate omission is an LLM-judge check type. A judge check is easy to add (another entry in `CHECKS` in `evals/checks.py`) but it couples eval results to a second model's behavior — non-deterministic and makes regressions ambiguous. The v1 suite intentionally stays deterministic.
+
+### Runner mechanics
+
+`evals/runner.py` walks `evals/tasks/`, and for each task:
+
+1. Optionally copies a fixture dir into `tempfile.mkdtemp()` and `os.chdir`s there.
+2. Resolves the provider via a simple precedence: CLI flag > task pin > current active. Calls `build_provider(...)` + `set_active_provider(...)`.
+3. Builds `on_tool_start` / `on_tool_end` closures that append to a lock-guarded list. End-callbacks match back to start-callbacks by name (the loop doesn't pass a tool-id on main), which is accurate for any realistic trace.
+4. Runs `run_agent(...)` in a daemon thread with `thread.join(wall_timeout_s)`. If the thread is still alive after the timeout, the task is marked timed out — the thread is left to finish on its own. For a learning harness one-at-a-time this is fine; a production eval would need a real cancellation path.
+5. Dispatches each check against a bundle `{content, trace, stats, ctx_used, cwd, fixture_dir}`. A task passes iff every check passes and no timeout / over-budget / exception occurred.
+6. Appends one JSON line per task to `evals/results/<provider>-<model>-<ts>.jsonl`, then prints a rich table. CLI exits non-zero if any task failed, so CI can gate on it.
+
+### The `run_agent`-as-library lesson, part two
+
+Plumbing evals exposed one real issue: the subagent tool and the eval runner both wanted deterministic permission policies without a live user prompt. The permission-gate contract is a plain callable, so each caller supplies its own lambda — REPL supplies `check_permission(console, ...)`, subagent forwards the parent's, evals picks `allow_all` / `deny_all` / `readonly_only`. Same signature, three callers, no special-casing in `run_agent`. That's the point.
+
+See: `evals/runner.py`, `evals/checks.py`, `evals/tasks/`, `scripts/run_evals.py`, `tests/test_evals_runner.py`.
+
+---
+
 ## To cover next
 
 - [ ] System prompt as configuration, not hardcode
