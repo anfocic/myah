@@ -13,7 +13,9 @@ the REPL's State dict, or where messages came from — those all belong
 upstairs in main.py / repl/."""
 
 import inspect
+import json
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent import READ_ONLY_TOOLS
@@ -21,10 +23,37 @@ from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens, truncate_tool_result
-from config import NUM_CTX
+from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW
 from display import StreamingMarkdown
 from providers import ProviderError, Usage, get_active_provider
 from security import annotate_if_injected
+
+
+def _halt_run(
+    *,
+    reason: str,
+    detail: str,
+    user_input: str,
+    history: list,
+    ctx_used: int,
+    console,
+):
+    """Build the shared (content, history, ctx_used, stats) tuple returned
+    when a loop guard fires. Mirrors the non-error final-turn return shape
+    so eval runners, subagents, and the REPL don't need branch-specific
+    handling — they just read `stats["halt_reason"]` when they care."""
+    content = f"[halted: {reason}] {detail}"
+    history.append({"role": "user", "content": user_input})
+    history.append({"role": "assistant", "content": content})
+    if console:
+        console.print(f"\n[yellow]↳ loop halted ({reason}): {detail}[/yellow]")
+    stats = {
+        "ttft_ms": None,
+        "completion_tokens": None,
+        "tok_per_s": None,
+        "halt_reason": reason,
+    }
+    return content, history, ctx_used, stats
 
 
 def _call_with_optional_meta(func, *args, meta: dict | None = None):
@@ -94,7 +123,24 @@ def run_agent(
     # a multi-tool trajectory, not only the final answer's reasoning.
     reasoning_total: list[str] = []
 
+    # Loop guards (CONCEPTS §loop-control). Both are per-call — a fresh
+    # user turn resets the counters so a long session doesn't gradually
+    # starve the cap or accumulate phantom spin history.
+    iter_count = 0
+    recent_calls: deque[tuple[str, str]] = deque(maxlen=SPIN_WINDOW)
+
     while True:
+        iter_count += 1
+        if iter_count > MAX_AGENT_ITERATIONS:
+            return _halt_run(
+                reason="iter_cap",
+                detail=f"hit {MAX_AGENT_ITERATIONS} iterations without a final answer",
+                user_input=user_input,
+                history=history,
+                ctx_used=ctx_used,
+                console=console,
+            )
+
         # Intra-turn context relief. Fires when a tool-heavy turn has racked
         # up enough results to push ctx past the threshold. Does nothing on
         # iteration 1 (no tool messages yet) or when the count is small.
@@ -244,6 +290,33 @@ def run_agent(
         ctx_used = (final_usage.prompt_tokens if final_usage else None) or estimate_tokens(messages)
 
         if tool_calls:
+            # Spinning guard: if the model keeps asking for the same
+            # (name, args) tuple across consecutive rounds, halt before
+            # executing again. Deque is size-capped, so we only ever look
+            # at the most recent SPIN_WINDOW tool calls — a legitimate
+            # re-read of the same file later in a trajectory doesn't
+            # trigger. Canonicalize args via json with sort_keys=True so
+            # semantically equal dicts compare equal.
+            for tc in tool_calls:
+                args_canonical = json.dumps(tc.arguments, sort_keys=True, default=str)
+                recent_calls.append((tc.name, args_canonical))
+            if (
+                len(recent_calls) == SPIN_WINDOW
+                and len(set(recent_calls)) == 1
+            ):
+                name, args_canonical = recent_calls[0]
+                return _halt_run(
+                    reason="spinning",
+                    detail=(
+                        f"{name}({args_canonical}) repeated {SPIN_WINDOW} "
+                        "consecutive times"
+                    ),
+                    user_input=user_input,
+                    history=history,
+                    ctx_used=ctx_used,
+                    console=console,
+                )
+
             messages.append(
                 {
                     "role": "assistant",
