@@ -7,6 +7,7 @@ Input engine: prompt_toolkit. The main REPL owns a single `PromptSession`
 completer. Uses `FileHistory` at `~/.mia_input_history` — not compatible
 with readline's prior format, which is why the filename changed when the
 engine was swapped."""
+
 import os
 import subprocess
 import time
@@ -60,7 +61,7 @@ def _short_branch(name: str) -> str:
     return name if len(name) <= _BRANCH_MAX else name[: _BRANCH_MAX - 1] + "…"
 
 
-_MODEL_MAX = 28
+_MODEL_MAX = 40
 
 
 def _clip(text: str, limit: int) -> str:
@@ -93,62 +94,31 @@ def _mode_labels(state: State) -> list[str]:
     return labels
 
 
+def _toolbar_model(provider) -> str:
+    """Compact provider:model label for the prompt-time chrome."""
+    model = _clip(provider.model, _MODEL_MAX)
+    return f"{provider.name}:{model}"
+
+
+def _toolbar_pct_style(ctx_used: int, ctx_total: int) -> str:
+    """Use the screenshot's green emphasis for ctx percentage."""
+    pct = _ctx_pct(ctx_used, ctx_total)
+    if pct < 0.70:
+        return "fg:#a9e68b bold"
+    if pct < 0.85:
+        return "fg:#d6e28f bold"
+    return "fg:#f2c66d bold"
+
+
 def build_prompt(state: State) -> FormattedText:
     """A short prompt keeps the input line focused; status lives in the
     bottom toolbar instead of competing with what the user is typing."""
     return FormattedText(
         [
-            ("bold ansimagenta", "You"),
+            ("bold white", "You"),
             ("ansibrightblack", " › "),
         ]
     )
-
-
-def build_bottom_toolbar(state: State) -> FormattedText:
-    """Persistent prompt-time status line: model, branch, context pressure,
-    and active modes. This stays visible while the user types, unlike the
-    post-turn stats printed into scrollback."""
-    provider = get_active_provider()
-    branch = _current_branch()
-    ctx_used = state.get("ctx_used", 0)
-    ctx_total = NUM_CTX
-    ctx_color = _ctx_color(ctx_used, ctx_total)
-
-    out: list[tuple[str, str]] = []
-
-    def add_text(style: str, text: str) -> None:
-        out.append((style, text))
-
-    def add_sep() -> None:
-        if out:
-            add_text("ansibrightblack", " · ")
-
-    def add_pair(label: str, value: str, value_style: str = "white") -> None:
-        add_sep()
-        add_text("ansibrightblack", f"{label} ")
-        add_text(value_style, value)
-
-    add_pair("model", f"{provider.name}:{_clip(provider.model, _MODEL_MAX)}")
-    if branch:
-        add_pair("branch", _short_branch(branch))
-    add_pair(
-        "ctx",
-        f"{ctx_used:,}/{ctx_total:,} {_ctx_pct(ctx_used, ctx_total):.0%}",
-        ctx_color,
-    )
-
-    modes = _mode_labels(state)
-    if modes:
-        add_sep()
-        for i, mode in enumerate(modes):
-            if i > 0:
-                add_text("ansibrightblack", " ")
-            style = "ansiyellow" if mode == "plan" else "ansimagenta"
-            add_text(style, mode)
-    else:
-        add_pair("mode", "normal", "ansibrightblack")
-
-    return FormattedText(out)
 
 
 class SlashCompleter(Completer):
@@ -178,12 +148,41 @@ def build_session(commands: dict, state: State) -> PromptSession:
     """Construct the REPL's single PromptSession. Held for the lifetime
     of the process so input history persists across turns without hitting
     disk on every prompt."""
+    # Pass a callable so prompt_toolkit re-renders the toolbar on every
+    # paint — otherwise it snapshots the value at session-construction
+    # time and the ctx/pct never changes.
     return PromptSession(
         history=FileHistory(INPUT_HISTORY_FILE),
         completer=SlashCompleter(commands),
         complete_while_typing=False,
         bottom_toolbar=lambda: build_bottom_toolbar(state),
     )
+
+
+def build_bottom_toolbar(state: State) -> FormattedText:
+    """Prompt-toolkit bottom toolbar. Returns FormattedText directly
+    because prompt_toolkit doesn't parse rich-style `[dim]...[/dim]`
+    markup — passing a rich-markup string (like `build_turn_footer`
+    returns) leaks the raw tags into the bar, which was the original
+    symptom. Rich markup stays in `build_turn_footer` for `console.print`
+    callers; this function is the prompt_toolkit-native counterpart.
+
+    Layout: `provider:model · branch · u/total ctx N%` — no plan/debug
+    badges (those belong on the turn header where a new reader sees them;
+    repeating them in the toolbar is noise)."""
+    provider = get_active_provider()
+    u = state["ctx_used"]
+    segments: list[tuple[str, str]] = [
+        ("class:dim", _toolbar_model(provider)),
+    ]
+    branch = _current_branch()
+    if branch:
+        segments.append(("class:dim", " · "))
+        segments.append(("class:dim", _short_branch(branch)))
+    segments.append(("class:dim", " · "))
+    segments.append(("class:dim", f"{u:,}/{NUM_CTX:,} ctx "))
+    segments.append((_toolbar_pct_style(u, NUM_CTX), f"{_ctx_pct(u, NUM_CTX):.0%}"))
+    return FormattedText(segments)
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
