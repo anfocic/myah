@@ -257,6 +257,15 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
         if delta.get("content"):
             yield StreamChunk(content_delta=delta["content"])
 
+        # LM Studio (qwen3), DeepSeek R1, and other reasoning-capable
+        # servers surface chain-of-thought on a separate delta key instead
+        # of inline `<think>...</think>` tags. If we don't read it we
+        # silently discard the model's actual output: for qwen3 in
+        # thinking mode, `content` can be empty while `reasoning_content`
+        # holds hundreds of tokens.
+        if delta.get("reasoning_content"):
+            yield StreamChunk(reasoning_delta=delta["reasoning_content"])
+
         for tc in delta.get("tool_calls") or []:
             idx = tc.get("index", 0)
             slot = tool_buf.setdefault(idx, {"id": None, "name": "", "arg_parts": []})

@@ -26,6 +26,11 @@ class ScriptedTurn:
     tool_calls: list[ToolCall] | None = None
     prompt_tokens: int = 100
     completion_tokens: int = 20
+    # Reasoning chunks surfaced on a separate stream channel (LM Studio's
+    # `reasoning_content`). Yielded before `content_chunks` so the ordering
+    # matches what real reasoning-capable servers do (think first, then
+    # emit the visible reply).
+    reasoning_chunks: list[str] | None = None
 
 
 class FakeProvider:
@@ -45,6 +50,8 @@ class FakeProvider:
                 "stream_chat more times than the test expected"
             )
         turn = self._script.pop(0)
+        for chunk in turn.reasoning_chunks or []:
+            yield StreamChunk(reasoning_delta=chunk)
         for chunk in turn.content_chunks:
             yield StreamChunk(content_delta=chunk)
         # Tool calls arrive in a single chunk (matches Ollama shape; OpenAI
@@ -248,3 +255,86 @@ def test_empty_content_final_turn_gets_default(install_provider):
 
     assert response == "Done."
     assert history[1]["content"] == "Done."
+
+
+def test_reasoning_stream_is_kept_out_of_content_and_history(install_provider):
+    """Reasoning deltas must never leak into the assistant's visible reply
+    or into the message history. If they did, every subsequent turn would
+    carry stale chain-of-thought that drags model quality down (and on
+    qwen3 specifically, echoing old `<think>` traces back into the context
+    confuses the template). The loop's contract: reasoning is for
+    observability only — rendered live and logged, but stripped from
+    content and history."""
+    install_provider([
+        ScriptedTurn(
+            reasoning_chunks=["I should ", "greet the user."],
+            content_chunks=["Hello!"],
+        ),
+    ])
+
+    response, history, _ctx, _stats = run_agent(
+        user_input="hi",
+        tools=[],
+        execute_tool=_noop_execute_tool,
+        history=[],
+    )
+
+    assert response == "Hello!"
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] == "Hello!"
+    assert "should" not in history[1]["content"]
+    assert "greet" not in history[1]["content"]
+
+
+def test_reasoning_without_content_still_defaults_to_done(install_provider):
+    """Edge case: some qwen3 turns emit reasoning and then hit max_tokens
+    before writing any `content`. The loop's existing empty-content
+    fallback (defaults to 'Done.') must still apply — we can't surface
+    the reasoning as the reply because it would pollute history, and
+    returning "" would break callers that assume a non-empty final
+    message (e.g. the REPL prints it)."""
+    install_provider([
+        ScriptedTurn(
+            reasoning_chunks=["thinking hard", " and harder"],
+            content_chunks=[],
+        ),
+    ])
+
+    response, history, _ctx, _stats = run_agent(
+        user_input="ok",
+        tools=[],
+        execute_tool=_noop_execute_tool,
+        history=[],
+    )
+
+    assert response == "Done."
+    assert history[1]["content"] == "Done."
+    assert "thinking" not in history[1]["content"]
+
+
+def test_reasoning_total_is_per_call_not_module_global(install_provider):
+    """A previous turn's reasoning must not bleed into the next run_agent
+    call's stats. If reasoning_total lived at module scope instead of
+    local-to-run_agent, every invocation would grow the joined trace, and
+    eval reports would carry reasoning from unrelated earlier tasks."""
+    install_provider([
+        ScriptedTurn(reasoning_chunks=["first-call reasoning"], content_chunks=["A"]),
+        ScriptedTurn(reasoning_chunks=["second-call reasoning"], content_chunks=["B"]),
+    ])
+
+    _, _, _, stats_one = run_agent(
+        user_input="one",
+        tools=[],
+        execute_tool=_noop_execute_tool,
+        history=[],
+    )
+    _, _, _, stats_two = run_agent(
+        user_input="two",
+        tools=[],
+        execute_tool=_noop_execute_tool,
+        history=[],
+    )
+
+    assert "first-call reasoning" in stats_one["reasoning"]
+    assert "first-call reasoning" not in stats_two["reasoning"]
+    assert stats_two["reasoning"] == "second-call reasoning"
