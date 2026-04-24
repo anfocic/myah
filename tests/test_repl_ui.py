@@ -87,15 +87,19 @@ def test_build_bottom_toolbar_shows_model_ctx_branch_and_modes(monkeypatch):
     state["plan_mode"] = True
     rendered = _rendered(build_bottom_toolbar(state))
     assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "branch feat/toolbar-pass" in rendered
-    assert "ctx 1,024/4,096 25%" in rendered
-    assert "plan" in rendered
+    assert "feat/toolbar-pass" in rendered
+    assert "1,024/4,096 ctx 25%" in rendered
+    assert "PLAN" not in rendered
+    assert "DEBUG" not in rendered
 
 
-def test_build_bottom_toolbar_shows_normal_mode_when_no_flags():
+def test_build_bottom_toolbar_omits_mode_tags_when_no_flags():
     state = new_state()
     rendered = _rendered(build_bottom_toolbar(state))
-    assert "mode normal" in rendered
+    assert "ollama:qwen2.5:7b-instruct" in rendered
+    assert "0/4,096 ctx 0%" in rendered
+    assert "PLAN" not in rendered
+    assert "DEBUG" not in rendered
 
 
 def test_build_turn_header_uses_turn_count_and_badges(monkeypatch):
