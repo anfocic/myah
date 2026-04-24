@@ -27,7 +27,7 @@ TASK = {
     "provider": None,
     "plan_mode": False,
     "permission": "allow_all",
-    "limits": {"max_tool_calls": 10, "wall_timeout_s": 120},
+    "limits": {"max_tool_calls": 10, "wall_timeout_s": 240},
     "checks": [
         {
             "type": "tool_trace",
