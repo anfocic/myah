@@ -17,6 +17,7 @@ import json
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 
 from agent import READ_ONLY_TOOLS
 from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
@@ -25,8 +26,157 @@ from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens, truncate_tool_result
 from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW
 from display import StreamingMarkdown
-from providers import ProviderError, Usage, get_active_provider
+from providers import Provider, ProviderError, Usage, get_active_provider
+from providers.base import ToolCall
 from security import annotate_if_injected
+
+
+@dataclass
+class TurnResult:
+    """What one provider turn produced once its stream is fully consumed.
+
+    Separated from `run_agent`'s orchestration so the streaming mechanics
+    (four chunk channels, UI rendering, exit paths) can be unit-tested
+    without message assembly or tool dispatch. See
+    `vault/wiki/code/agent-loop.md` §Phase 3 for the mental model."""
+    content: str = ""
+    reasoning: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: Usage | None = None
+    ttft_ms: int | None = None
+    # Set when `stream_chat` raised `ProviderError`. KeyboardInterrupt is
+    # NOT caught here — it re-raises so the REPL's outer handler sees it.
+    provider_error: ProviderError | None = None
+
+
+def _stream_provider_turn(
+    provider: Provider,
+    messages: list[dict],
+    tools: list,
+    num_ctx: int,
+    *,
+    console,
+    start_time: float,
+) -> TurnResult:
+    """Consume one `provider.stream_chat` iterator to completion.
+
+    Owns: spinner lifecycle, markdown renderer init/finish, four chunk
+    channels (content / reasoning / tool_calls / done), dim-italic
+    reasoning block open/close, cleanup on KeyboardInterrupt (re-raises)
+    and ProviderError (returns with `provider_error` set).
+
+    Does NOT decide whether to loop, append to messages/history, invoke
+    tools, or compute stats — that stays the caller's job so `run_agent`
+    still reads top to bottom as a sequence of phases."""
+    thinking = console.status("[yellow]Thinking...[/yellow]", spinner="dots") if console else None
+    if thinking:
+        thinking.start()
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    reasoning_rendering = False
+    tool_calls: list[ToolCall] = []
+    final_usage: Usage | None = None
+    first_content_seen = False
+    ttft_ms: int | None = None
+    renderer = StreamingMarkdown(console) if console else None
+
+    try:
+        for chunk in provider.stream_chat(messages, tools, num_ctx):
+            if chunk.reasoning_delta:
+                # Swap the spinner for an in-line dim stream the first
+                # time reasoning shows up. Every subsequent chunk just
+                # prints incrementally so the user sees the model
+                # thinking in real time without the markdown renderer
+                # (which is reserved for the final assistant reply).
+                if thinking:
+                    thinking.stop()
+                    thinking = None
+                if not reasoning_rendering and console:
+                    console.print("↳ thinking: ", end="", style="dim italic")
+                    reasoning_rendering = True
+                reasoning_parts.append(chunk.reasoning_delta)
+                if console:
+                    # markup=False so a `[bracket]` in the reasoning
+                    # trace isn't parsed as a Rich tag; style carries
+                    # the formatting so the delta itself stays literal.
+                    console.print(
+                        chunk.reasoning_delta,
+                        end="", style="dim italic", soft_wrap=True, markup=False,
+                    )
+
+            if chunk.content_delta:
+                if thinking:
+                    thinking.stop()
+                    thinking = None
+                if reasoning_rendering and console:
+                    # Reasoning is done once real content starts. Close
+                    # the dim block with a newline so the markdown
+                    # renderer below starts cleanly.
+                    console.print()
+                    reasoning_rendering = False
+                if not first_content_seen:
+                    first_content_seen = True
+                    ttft_ms = int((time.time() - start_time) * 1000)
+                content_parts.append(chunk.content_delta)
+                if renderer:
+                    renderer.update("".join(content_parts))
+
+            if chunk.tool_calls:
+                tool_calls.extend(chunk.tool_calls)
+
+            if chunk.done:
+                final_usage = chunk.usage
+
+        # Reasoning-only turn (no content, no tool_calls): close the dim
+        # block so the prompt doesn't land on the same line.
+        if reasoning_rendering and console:
+            console.print()
+            reasoning_rendering = False
+    except KeyboardInterrupt:
+        if thinking:
+            thinking.stop()
+        if reasoning_rendering and console:
+            console.print()
+        if renderer:
+            renderer.finish("".join(content_parts))
+        elif first_content_seen and console:
+            console.print()
+        raise
+    except ProviderError as e:
+        if thinking:
+            thinking.stop()
+        if reasoning_rendering and console:
+            console.print()
+        if renderer:
+            renderer.finish("".join(content_parts))
+        elif first_content_seen and console:
+            console.print()
+        return TurnResult(
+            content="".join(content_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls,
+            usage=final_usage,
+            ttft_ms=ttft_ms,
+            provider_error=e,
+        )
+
+    # Normal completion — tool-only turns never saw a content delta to
+    # trigger spinner stop, so clear it now before tool output starts.
+    if thinking:
+        thinking.stop()
+
+    content = "".join(content_parts)
+    if renderer:
+        renderer.finish(content)
+
+    return TurnResult(
+        content=content,
+        reasoning="".join(reasoning_parts),
+        tool_calls=tool_calls,
+        usage=final_usage,
+        ttft_ms=ttft_ms,
+    )
 
 
 def _halt_run(
@@ -161,98 +311,20 @@ def run_agent(
         if debug and console:
             _debug_dump_messages(console, messages)
 
-        # Animated spinner instead of a static "Thinking..." line. The old
-        # concern was that rich.live.Live fights patch_stdout's pinned
-        # prompt — but that's only an issue while prompt_toolkit is
-        # actively prompting. During run_agent() we own the terminal, so
-        # Live works cleanly and erases itself when we .stop() it.
-        thinking = console.status("[yellow]Thinking...[/yellow]", spinner="dots") if console else None
-        if thinking:
-            thinking.start()
-
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        reasoning_rendering = False
-        tool_calls: list = []
-        final_usage: Usage | None = None
-        first_content_seen = False
-        ttft_ms: int | None = None
-        renderer = StreamingMarkdown(console) if console else None
-
         provider = get_active_provider()
-        try:
-            for chunk in provider.stream_chat(messages, tools, NUM_CTX):
-                if chunk.reasoning_delta:
-                    # Swap the spinner for an in-line dim stream the first
-                    # time reasoning shows up. Every subsequent chunk just
-                    # prints incrementally so the user sees the model
-                    # thinking in real time without the markdown renderer
-                    # (which is reserved for the final assistant reply).
-                    if thinking:
-                        thinking.stop()
-                        thinking = None
-                    if not reasoning_rendering and console:
-                        console.print("↳ thinking: ", end="", style="dim italic")
-                        reasoning_rendering = True
-                    reasoning_parts.append(chunk.reasoning_delta)
-                    if console:
-                        # markup=False so a `[bracket]` in the reasoning
-                        # trace isn't parsed as a Rich tag; style carries
-                        # the formatting so the delta itself stays literal.
-                        console.print(
-                            chunk.reasoning_delta,
-                            end="", style="dim italic", soft_wrap=True, markup=False,
-                        )
+        turn = _stream_provider_turn(
+            provider, messages, tools, NUM_CTX,
+            console=console, start_time=start,
+        )
 
-                if chunk.content_delta:
-                    if thinking:
-                        thinking.stop()
-                        thinking = None
-                    if reasoning_rendering and console:
-                        # Reasoning is done once real content starts. Close
-                        # the dim block with a newline so the markdown
-                        # renderer below starts cleanly.
-                        console.print()
-                        reasoning_rendering = False
-                    if not first_content_seen:
-                        first_content_seen = True
-                        ttft_ms = int((time.time() - start) * 1000)
-                    content_parts.append(chunk.content_delta)
-                    if renderer:
-                        renderer.update("".join(content_parts))
+        if turn.reasoning:
+            reasoning_total.append(turn.reasoning)
 
-                if chunk.tool_calls:
-                    tool_calls.extend(chunk.tool_calls)
-
-                if chunk.done:
-                    final_usage = chunk.usage
-
-            # Reasoning-only turn (no content, no tool_calls): close the dim
-            # block so the prompt doesn't land on the same line.
-            if reasoning_rendering and console:
-                console.print()
-                reasoning_rendering = False
-        except KeyboardInterrupt:
-            if thinking:
-                thinking.stop()
-            if reasoning_rendering and console:
-                console.print()
-            if renderer:
-                renderer.finish("".join(content_parts))
-            elif first_content_seen and console:
-                console.print()
-            raise
-        except ProviderError as e:
-            if thinking:
-                thinking.stop()
-            if reasoning_rendering and console:
-                console.print()
-            if renderer:
-                renderer.finish("".join(content_parts))
-            elif first_content_seen and console:
-                console.print()
+        if turn.provider_error is not None:
             if console:
-                console.print(f"\n[red]Provider error ({provider.name}):[/red] {e}")
+                console.print(
+                    f"\n[red]Provider error ({provider.name}):[/red] {turn.provider_error}"
+                )
             return (
                 "",
                 history,
@@ -261,35 +333,23 @@ def run_agent(
                     "ttft_ms": None,
                     "completion_tokens": None,
                     "tok_per_s": None,
-                    "provider_error": f"{provider.name}: {e}",
+                    "provider_error": f"{provider.name}: {turn.provider_error}",
                     "reasoning": "\n\n".join(reasoning_total),
                 },
             )
 
-        # Tool-only turn (no content) — the spinner never saw a token to
-        # trigger its stop; clear it now before tool output starts.
-        if thinking:
-            thinking.stop()
-            thinking = None
-
-        content = "".join(content_parts)
-        reasoning = "".join(reasoning_parts)
-        if reasoning:
-            reasoning_total.append(reasoning)
-        if renderer:
-            renderer.finish(content)
         log_response(
-            final_usage,
+            turn.usage,
             messages,
-            content=content,
-            tool_calls=tool_calls,
-            ttft_ms=ttft_ms,
-            reasoning=reasoning,
+            content=turn.content,
+            tool_calls=turn.tool_calls,
+            ttft_ms=turn.ttft_ms,
+            reasoning=turn.reasoning,
         )
 
-        ctx_used = (final_usage.prompt_tokens if final_usage else None) or estimate_tokens(messages)
+        ctx_used = (turn.usage.prompt_tokens if turn.usage else None) or estimate_tokens(messages)
 
-        if tool_calls:
+        if turn.tool_calls:
             # Spinning guard: if the model keeps asking for the same
             # (name, args) tuple across consecutive rounds, halt before
             # executing again. Deque is size-capped, so we only ever look
@@ -297,7 +357,7 @@ def run_agent(
             # re-read of the same file later in a trajectory doesn't
             # trigger. Canonicalize args via json with sort_keys=True so
             # semantically equal dicts compare equal.
-            for tc in tool_calls:
+            for tc in turn.tool_calls:
                 args_canonical = json.dumps(tc.arguments, sort_keys=True, default=str)
                 recent_calls.append((tc.name, args_canonical))
             if (
@@ -320,17 +380,17 @@ def run_agent(
             messages.append(
                 {
                     "role": "assistant",
-                    "content": content,
+                    "content": turn.content,
                     # Carry the tool calls on the assistant message. Ollama ignores
                     # unknown fields; the openai-compat adapter uses them to build
                     # the OpenAI-shaped tool_calls array with synthesized IDs.
                     "tool_calls": [
-                        {"name": tc.name, "arguments": tc.arguments} for tc in tool_calls
+                        {"name": tc.name, "arguments": tc.arguments} for tc in turn.tool_calls
                     ],
                 }
             )
             results = _run_tools_parallel(
-                tool_calls,
+                turn.tool_calls,
                 execute_tool,
                 permission_check,
                 plan_mode=plan_mode,
@@ -350,6 +410,7 @@ def run_agent(
                 safe = annotate_if_injected(content_str)
                 messages.append({"role": "tool", "content": truncate_tool_result(safe)})
         else:
+            content = turn.content
             if not content:
                 content = "Done."
                 if console:
@@ -360,14 +421,14 @@ def run_agent(
             # generating (elapsed minus ttft). Only meaningful when both
             # are known; otherwise None so main.py can skip rendering.
             stream_s = None
-            if ttft_ms is not None:
-                stream_s = (time.time() - start) - (ttft_ms / 1000)
-            completion_tokens = final_usage.completion_tokens if final_usage else None
+            if turn.ttft_ms is not None:
+                stream_s = (time.time() - start) - (turn.ttft_ms / 1000)
+            completion_tokens = turn.usage.completion_tokens if turn.usage else None
             tok_per_s = None
             if completion_tokens and stream_s and stream_s > 0:
                 tok_per_s = completion_tokens / stream_s
             stats = {
-                "ttft_ms": ttft_ms,
+                "ttft_ms": turn.ttft_ms,
                 "completion_tokens": completion_tokens,
                 "tok_per_s": tok_per_s,
                 # Full chain-of-thought across every turn in this

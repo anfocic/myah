@@ -471,3 +471,157 @@ def test_loop_does_not_halt_on_legitimate_repeats(install_provider):
 
     assert response == "Done reading."
     assert stats.get("halt_reason") is None
+
+
+# ---------- _stream_provider_turn unit tests ----------
+#
+# Hit `_stream_provider_turn` directly so the four chunk channels + three
+# exit paths can be exercised without tool dispatch or message assembly.
+# See vault/wiki/plans/plan-stream-session-extraction.md for the
+# motivation.
+
+import time as _time  # noqa: E402  intentional shadow-free alias for local use
+
+from agent.loop import _stream_provider_turn  # noqa: E402
+
+
+def _consume(script: list[ScriptedTurn]):
+    """Build a FakeProvider on `script` and run one turn through the
+    extracted stream helper. Returns the `TurnResult`."""
+    provider = FakeProvider(script)
+    return _stream_provider_turn(
+        provider,
+        messages=[{"role": "user", "content": "x"}],
+        tools=[],
+        num_ctx=4096,
+        console=None,
+        start_time=_time.time(),
+    )
+
+
+def test_stream_processes_content_deltas_into_single_string():
+    result = _consume([ScriptedTurn(content_chunks=["Hello ", "there!"])])
+    assert result.content == "Hello there!"
+    assert result.tool_calls == []
+    assert result.provider_error is None
+
+
+def test_stream_separates_reasoning_from_content():
+    """Both streams accumulate independently and land on distinct fields."""
+    result = _consume([
+        ScriptedTurn(
+            reasoning_chunks=["step 1 ", "step 2"],
+            content_chunks=["visible reply"],
+        ),
+    ])
+    assert result.reasoning == "step 1 step 2"
+    assert result.content == "visible reply"
+    # Reasoning is never smeared into content.
+    assert "step" not in result.content
+
+
+def test_stream_buffers_tool_calls_until_done():
+    call = ToolCall(name="read_file", arguments={"path": "x.py"})
+    result = _consume([
+        ScriptedTurn(content_chunks=[], tool_calls=[call]),
+    ])
+    assert result.tool_calls == [call]
+    assert result.content == ""
+
+
+def test_stream_captures_usage_from_done_chunk():
+    result = _consume([
+        ScriptedTurn(
+            content_chunks=["hi"],
+            prompt_tokens=77,
+            completion_tokens=3,
+        ),
+    ])
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 77
+    assert result.usage.completion_tokens == 3
+
+
+def test_stream_provider_error_is_returned_not_raised():
+    """ProviderError is caught and surfaced on the TurnResult so the
+    caller can build the provider_error stats entry without a try/except."""
+    class FailingProvider:
+        name = "fake-failing"
+        model = "fake-failing-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            raise ProviderError("boom")
+            yield  # pragma: no cover
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    result = _stream_provider_turn(
+        FailingProvider(),
+        messages=[{"role": "user", "content": "x"}],
+        tools=[],
+        num_ctx=4096,
+        console=None,
+        start_time=_time.time(),
+    )
+    assert isinstance(result.provider_error, ProviderError)
+    assert str(result.provider_error) == "boom"
+    assert result.content == ""
+    assert result.tool_calls == []
+
+
+def test_stream_keyboard_interrupt_propagates():
+    """Ctrl-C during stream is NOT caught by the helper — it re-raises so
+    the REPL's outer handler sees it and can clean up the prompt."""
+    class InterruptingProvider:
+        name = "fake-interrupt"
+        model = "fake-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            yield StreamChunk(content_delta="partial")
+            raise KeyboardInterrupt
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    with pytest.raises(KeyboardInterrupt):
+        _stream_provider_turn(
+            InterruptingProvider(),
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            num_ctx=4096,
+            console=None,
+            start_time=_time.time(),
+        )
+
+
+def test_stream_ttft_measured_on_first_content_not_reasoning():
+    """ttft_ms should clock the first *visible* token, not the first
+    reasoning delta. Reasoning is upstream thinking, not user-facing
+    latency — conflating them would make reasoning-capable models look
+    artificially fast on metrics they have no business winning."""
+    start = _time.time() - 0.050  # pretend we started 50ms ago
+    provider = FakeProvider([
+        ScriptedTurn(
+            reasoning_chunks=["thinking first"],
+            content_chunks=["then reply"],
+        ),
+    ])
+    result = _stream_provider_turn(
+        provider,
+        messages=[{"role": "user", "content": "x"}],
+        tools=[],
+        num_ctx=4096,
+        console=None,
+        start_time=start,
+    )
+    # ttft is measured relative to start_time, must be positive and
+    # roughly ≥50ms since start was shifted backward.
+    assert result.ttft_ms is not None
+    assert result.ttft_ms >= 50
