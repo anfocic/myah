@@ -184,17 +184,41 @@ _active: Provider | None = None
 
 def get_active_provider() -> Provider:
     """Return the live provider the REPL is currently talking to. Lazy-inits
-    from config on first access so imports stay cheap."""
+    from config on first access so imports stay cheap. Routes through
+    `set_active_provider` so the single-model-resident invariant is enforced
+    on startup too, not only on /model swaps."""
     global _active
     if _active is None:
-        _active = get_provider()
+        set_active_provider(get_provider())
+    assert _active is not None  # set_active_provider just assigned it
     return _active
 
 
 def set_active_provider(p: Provider) -> None:
-    """Swap the live provider. Called by /model after a successful switch."""
+    """Swap the live provider. Called by /model after a successful switch,
+    by the eval runner when a task pins a provider, and by the lazy-init
+    path on first access.
+
+    After installing `p`, ask it to evict every other model resident on the
+    same backend. The harness's single-model invariant exists because two
+    large models concurrently loaded can OOM a local GPU; the provider's
+    `ensure_exclusive` knows how to reach its own backend's unload path
+    (ollama daemon, LM Studio `lms` CLI, etc.). The method is optional, so
+    hosted providers (Anthropic, OpenAI, DeepSeek) simply don't expose it
+    and the hook is a no-op for them.
+    """
     global _active
     _active = p
+    ensure = getattr(p, "ensure_exclusive", None)
+    if callable(ensure):
+        try:
+            ensure()
+        except Exception:
+            # Best-effort: the user's session must not fail to start just
+            # because model eviction on the backend hiccuped. Worst case
+            # they're in the pre-fix state with two models resident, which
+            # is exactly what they were in before this call.
+            pass
 
 
 def list_ollama_models() -> list[str]:
