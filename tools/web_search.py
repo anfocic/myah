@@ -121,7 +121,9 @@ def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
         "Accept-Encoding": "gzip",
         "X-Subscription-Token": api_key,
     }
-    params = {
+    # Explicit annotation: without it, mypy widens the value type to
+    # `object` and httpx.get's `params` param rejects it.
+    params: dict[str, str | int] = {
         "q": query,
         "count": count,
         "country": "ALL",
