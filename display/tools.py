@@ -31,10 +31,6 @@ def _args_preview(args: dict) -> str:
     return s if len(s) <= 70 else s[:67] + "..."
 
 
-def _tool_id(meta: dict | None) -> str:
-    return str((meta or {}).get("tool_id", "T??"))
-
-
 def _duration_label(meta: dict | None) -> str:
     duration_s = (meta or {}).get("duration_s")
     if duration_s is None:
@@ -150,37 +146,30 @@ def _result_summary(name: str, args: dict, result: str) -> str:
 
 
 def on_tool_start(name: str, args: dict, meta: dict | None = None) -> None:
-    tool_id = _tool_id(meta)
     preview = _args_preview(args)
     if preview:
-        console.print(f"[cyan]{tool_id}[/cyan] [bold]{name}[/bold] [dim]{preview}[/dim]")
+        console.print(f"[dim]●[/dim] [bold]{name}[/bold] [dim]{preview}[/dim]")
     else:
-        console.print(f"[cyan]{tool_id}[/cyan] [bold]{name}[/bold]")
+        console.print(f"[dim]●[/dim] [bold]{name}[/bold]")
 
 
 def on_tool_end(name: str, args: dict, result: str, ok: bool, meta: dict | None = None) -> None:
-    tool_id = _tool_id(meta)
     duration = _duration_label(meta)
     duration_tail = f" [dim]· {duration}[/dim]" if duration else ""
     if not ok:
         if result.startswith("User denied"):
-            console.print(f"  [dim]{tool_id}[/dim] [dim]↳[/dim] [red]denied[/red]{duration_tail}")
+            console.print(f"  [dim]└[/dim] [red]denied[/red]{duration_tail}")
         elif result.startswith("Plan mode:"):
-            console.print(
-                f"  [dim]{tool_id}[/dim] [dim]↳[/dim] "
-                f"[yellow]blocked (plan mode)[/yellow]{duration_tail}"
-            )
+            console.print(f"  [dim]└[/dim] [yellow]blocked (plan mode)[/yellow]{duration_tail}")
         elif result.startswith("Tool raised:"):
             first = result.split("\n", 1)[0]
-            console.print(
-                f"  [dim]{tool_id}[/dim] [dim]↳[/dim] [red]{first}[/red]{duration_tail}"
-            )
+            console.print(f"  [dim]└[/dim] [red]{first}[/red]{duration_tail}")
         else:
             first = result.splitlines()[0] if result else "(empty)"
-            console.print(f"  [dim]{tool_id}[/dim] [dim]↳ {first}[/dim]{duration_tail}")
+            console.print(f"  [dim]└ {first}[/dim]{duration_tail}")
         return
     summary = _result_summary(name, args, result)
-    console.print(f"  [dim]{tool_id}[/dim] [dim]↳ {summary}[/dim]{duration_tail}")
+    console.print(f"  [dim]└ {summary}[/dim]{duration_tail}")
 
     if name == "edit_file" and args.get("old_string") is not None:
         render_diff(

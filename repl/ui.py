@@ -101,10 +101,11 @@ def _toolbar_model(provider) -> str:
 
 
 def _toolbar_pct_style(ctx_used: int, ctx_total: int) -> str:
-    """Use the screenshot's green emphasis for ctx percentage."""
+    """Muted below 70% (no reason to shout when ctx is comfortable),
+    warm when approaching trim threshold, hot when auto-trim fires."""
     pct = _ctx_pct(ctx_used, ctx_total)
     if pct < 0.70:
-        return "fg:#a9e68b bold"
+        return "class:dim"
     if pct < 0.85:
         return "fg:#d6e28f bold"
     return "fg:#f2c66d bold"
@@ -186,12 +187,14 @@ def build_bottom_toolbar(state: State) -> FormattedText:
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
-    """Colored `ctx N%` marker for the post-turn status line. Green below
-    70% (comfortable), yellow 70–85% (trim incoming), red above 85%
-    (auto-trim fires). Thresholds intentionally above trim_history's 0.8
-    bound so a fresh session with a large system prompt doesn't flash
-    yellow on turn 1."""
+    """`ctx N%` marker. Silent below 70% — a green-0% splash on every turn
+    is attention without information. Yellow 70–85% (trim incoming), red
+    above 85% (auto-trim fires). Thresholds intentionally above
+    trim_history's 0.8 bound so a fresh session with a large system
+    prompt doesn't flash yellow on turn 1."""
     pct = _ctx_pct(ctx_used, ctx_total)
+    if pct < 0.70:
+        return f"[dim]ctx {pct:.0%}[/dim]"
     color = _ctx_color(ctx_used, ctx_total)
     return f"[dim]ctx[/dim] [{color}]{pct:.0%}[/{color}]"
 

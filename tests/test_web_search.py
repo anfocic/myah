@@ -1,10 +1,10 @@
 import httpx
 from rich.console import Console
 
+import tools.web_search as web_search_module
 from agent import READ_ONLY_TOOLS
 from display import _parse_web_results, render_web_search_results
 from repl.tool_registry import TOOL_NAMES, make_execute_tool, tools
-import tools.web_search as web_search_module
 from tools.web_search import SEARCH_API_URL, web_search
 
 
