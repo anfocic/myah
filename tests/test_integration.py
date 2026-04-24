@@ -62,6 +62,12 @@ class FakeProvider:
     def chat(self, messages, num_ctx):
         raise NotImplementedError("scripted FakeProvider only supports streaming")
 
+    def count_tokens(self, messages, tools=None):
+        # Stub to satisfy the Provider protocol — tests that care about
+        # counting set their own fake before calling. Kept as an explicit
+        # NotImplementedError so any accidental use surfaces loudly.
+        raise NotImplementedError("scripted FakeProvider does not count tokens")
+
 
 @pytest.fixture
 def install_provider():

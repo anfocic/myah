@@ -3,6 +3,8 @@ data-plane split (CONCEPTS §22): slash input is handled by the REPL without
 the model in the loop. Every handler takes `(state, arg="")` — commands
 that don't use `arg` ignore it, so `handle_slash` can dispatch uniformly
 without inspecting function signatures."""
+from rich.panel import Panel
+
 from agent import apply_summary, compact_history
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens
@@ -15,7 +17,6 @@ from providers import (
     list_ollama_models,
     set_active_provider,
 )
-from rich.panel import Panel
 from repl.console import console
 from repl.persistence import wipe_session
 from repl.state import State
