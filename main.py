@@ -12,7 +12,7 @@ import time
 
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from agent import apply_summary, run_agent, status_line, trim_history
+from agent import apply_summary, run_agent, trim_history
 from config import NUM_CTX
 from display import on_tool_end, on_tool_start
 from permissions import check_permission
@@ -25,7 +25,7 @@ from repl.persistence import (
 )
 from repl.state import State, new_state
 from repl.tool_registry import make_execute_tool, tools
-from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
+from repl.ui import build_prompt, build_session
 
 
 def _parse_args() -> argparse.Namespace:
@@ -118,7 +118,6 @@ def main() -> None:
             state["snapshots"].append(copy.deepcopy(state["history"]))
             dropped: list = []
             try:
-                console.print(build_turn_header(state))
                 response, state["history"], state["ctx_used"], stats = run_agent(
                     user_input, tools, execute_tool, state["history"],
                     console=console,
@@ -133,14 +132,23 @@ def main() -> None:
                     state["history"], state["ctx_used"], NUM_CTX
                 )
                 if dropped:
-                    console.print(status_line("Summarizing dropped turns..."))
-                    state["history"] = apply_summary(state["history"], dropped)
+                    with console.status(
+                        "[yellow]Summarizing dropped turns...[/yellow]",
+                        spinner="dots",
+                    ):
+                        state["history"] = apply_summary(state["history"], dropped)
             except KeyboardInterrupt:
                 console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
                 continue
 
             elapsed = time.time() - start
-            console.print(build_turn_footer(state["ctx_used"], NUM_CTX, elapsed, stats))
+            # Stash per-turn metrics on state so `/stats` can surface them
+            # on demand instead of printing a footer line every turn.
+            state["last_turn"] = {
+                "ctx_used": state["ctx_used"],
+                "elapsed_s": elapsed,
+                **(stats or {}),
+            }
             if dropped:
                 threshold = int(0.8 * NUM_CTX)
                 console.print(

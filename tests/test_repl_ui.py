@@ -18,8 +18,8 @@ from repl import ui
 from repl.state import new_state
 from repl.ui import (
     SlashCompleter,
-    build_bottom_toolbar,
     build_prompt,
+    build_rprompt,
     build_turn_footer,
     build_turn_header,
 )
@@ -80,26 +80,60 @@ def test_build_prompt_omits_badges_when_clean():
     assert "debug" not in rendered
 
 
-def test_build_bottom_toolbar_shows_model_ctx_branch_and_modes(monkeypatch):
+def test_build_rprompt_shows_short_model_pct_and_branch(monkeypatch):
     monkeypatch.setattr(ui, "_current_branch", lambda: "feat/toolbar-pass")
     state = new_state()
     state["ctx_used"] = 1024
-    state["plan_mode"] = True
-    rendered = _rendered(build_bottom_toolbar(state))
-    assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "feat/toolbar-pass" in rendered
-    assert "1,024/4,096 ctx 25%" in rendered
-    assert "PLAN" not in rendered
-    assert "DEBUG" not in rendered
+    rendered = _rendered(build_rprompt(state))
+    # Short model name, no provider prefix.
+    assert "qwen2.5:7b-instruct" in rendered
+    assert "ollama:" not in rendered
+    # Percentage only — no `1,024/4,096 ctx` clutter.
+    assert "25%" in rendered
+    assert "1,024/4,096" not in rendered
+    assert "ctx" not in rendered
+    # rprompt is a single inline segment — no padding — so model then pct
+    # then branch in order with ` · ` separators.
+    assert rendered == "qwen2.5:7b-instruct · 25% · feat/toolbar-pass"
 
 
-def test_build_bottom_toolbar_omits_mode_tags_when_no_flags():
+def test_build_rprompt_strips_org_prefix_on_slashed_models(monkeypatch):
+    monkeypatch.setattr(
+        ui,
+        "get_active_provider",
+        lambda: SimpleNamespace(name="openai-compat", model="google/gemma-4-e4b"),
+    )
     state = new_state()
-    rendered = _rendered(build_bottom_toolbar(state))
-    assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "0/4,096 ctx 0%" in rendered
-    assert "PLAN" not in rendered
-    assert "DEBUG" not in rendered
+    rendered = _rendered(build_rprompt(state))
+    assert "gemma-4-e4b" in rendered
+    assert "google/" not in rendered
+
+
+def test_build_rprompt_omits_branch_segment_when_not_in_repo():
+    state = new_state()
+    rendered = _rendered(build_rprompt(state))
+    assert "qwen2.5:7b-instruct" in rendered
+    assert "0%" in rendered
+    # Only one separator: between model and pct. No trailing branch.
+    assert rendered.count(" · ") == 1
+
+
+def test_build_rprompt_gradient_shifts_style_with_ctx(monkeypatch):
+    """Smoke test for the gradient: low-fill and high-fill should produce
+    different foreground colors on the pct segment."""
+    state_low = new_state()
+    state_low["ctx_used"] = 100  # ~2%
+    state_high = new_state()
+    state_high["ctx_used"] = 3800  # ~93%
+
+    def style_of_pct(segments):
+        return next(style for style, text in segments if text.endswith("%"))
+
+    low = style_of_pct(build_rprompt(state_low))
+    high = style_of_pct(build_rprompt(state_high))
+    assert low != high
+    assert low.startswith("fg:#")
+    assert high.startswith("fg:#")
 
 
 def test_build_turn_header_uses_turn_count_and_badges(monkeypatch):
