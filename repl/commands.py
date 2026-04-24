@@ -277,18 +277,26 @@ def cmd_profile(state: State, arg: str = "") -> None:
 
 
 def cmd_eval(state: State, arg: str = "") -> None:
-    """Run the eval suite against the active provider/model from inside the
-    REPL. Mirrors `scripts/run_evals.py` but scoped to the current session.
+    """Run the eval suite against the active provider/model — or across
+    multiple models at once in matrix mode.
 
     Arg shapes:
-        /eval                         — run every task
-        /eval list                    — list task ids, don't run
-        /eval find_string             — run one task
-        /eval find_string edit_rename — run a subset (space-separated)
+        /eval                              — run every task on current model
+        /eval list                         — list task ids, don't run
+        /eval find_string                  — run one task on current model
+        /eval find_string edit_rename      — run a subset
+        /eval -m openai-compat:gpt-4.1-mini -m ollama:qwen2.5:7b-instruct
+                                           — matrix: full suite on each model
+        /eval -m ... -m ... task1 task2    — matrix with a task subset
 
-    The active provider is used. Swap with /model first if you want to
-    compare models. `run_suite` saves/restores the active provider itself,
-    so the REPL session isn't disturbed if a task pins a different one."""
+    Matrix mode (`-m provider:model` repeated) swaps providers internally
+    and prints a combined comparison table. Models need to be pre-loaded
+    on backends that require explicit loads (LM Studio's `lms load`);
+    the runner handles the swap + `ensure_exclusive` eviction but cannot
+    load a model the server doesn't already have.
+
+    For single-model runs the active provider is used; `run_suite` saves/
+    restores it so the REPL isn't disturbed if a task pins a different one."""
     # Imported lazily so the eval deps (rich.table, task modules, fixtures)
     # only load when the user actually runs /eval. Reloading keeps the REPL
     # dev loop honest: eval runner fixes take effect without restarting Mia.
@@ -305,11 +313,42 @@ def cmd_eval(state: State, arg: str = "") -> None:
             console.print(f"  {tid}")
         return
 
-    task_ids = parts or None
+    models: list[tuple[str, str]] = []
+    task_ids: list[str] = []
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if tok == "-m":
+            if i + 1 >= len(parts):
+                console.print("[red]/eval: -m needs a provider:model argument[/red]")
+                return
+            spec = parts[i + 1]
+            provider_name, sep, model_name = spec.partition(":")
+            if not sep or not model_name:
+                console.print(
+                    f"[red]/eval: -m expects provider:model, got {spec!r}[/red]"
+                )
+                return
+            models.append((provider_name, model_name))
+            i += 2
+        else:
+            task_ids.append(tok)
+            i += 1
+
+    tids = task_ids or None
+    if models:
+        scope = f"{len(task_ids)} task(s)" if task_ids else "full suite"
+        console.print(
+            f"[dim]↳ matrix run: {scope} across {len(models)} model(s): "
+            f"{', '.join(f'{p}:{m}' for p, m in models)}[/dim]"
+        )
+        eval_runner.run_matrix(models=models, task_ids=tids, console=console)
+        return
+
     provider = get_active_provider()
     scope = f"{len(task_ids)} task(s)" if task_ids else "full suite"
     console.print(f"[dim]↳ running {scope} on {provider.model} ({provider.name})...[/dim]")
-    eval_runner.run_suite(task_ids=task_ids, console=console)
+    eval_runner.run_suite(task_ids=tids, console=console)
 
 
 def cmd_model(state: State, arg: str = "") -> None:

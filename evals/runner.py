@@ -459,5 +459,93 @@ def run_suite(
     return results
 
 
+def run_matrix(
+    models: list[tuple[str, str]],
+    task_ids: list[str] | None = None,
+    console: Console | None = None,
+) -> dict[tuple[str, str], list[TaskResult]]:
+    """Run the suite once per `(provider, model)` pair; emit a combined
+    comparison table.
+
+    Primary use: compare capability across local + hosted models without
+    manually swapping providers between runs. The user still has to
+    pre-load models on backends that require it (LM Studio's `lms load`);
+    this function handles the provider swap + `ensure_exclusive` eviction
+    between rounds, but it cannot magically load a model the server
+    doesn't have.
+
+    Per-model runs are serial — we hold the single-model-resident
+    invariant across the whole matrix. Parallel matrix runs would need
+    N GPUs or a different provider topology.
+    """
+    console = console or Console()
+    results: dict[tuple[str, str], list[TaskResult]] = {}
+    saved_provider = get_active_provider()
+    try:
+        for i, (provider_name, model_name) in enumerate(models, start=1):
+            console.print(
+                f"\n[bold cyan]╭── [{i}/{len(models)}] matrix run: "
+                f"{provider_name}:{model_name} ──[/bold cyan]"
+            )
+            model_results = run_suite(
+                task_ids=task_ids,
+                cli_provider=provider_name,
+                cli_model=model_name,
+                console=console,
+            )
+            results[(provider_name, model_name)] = model_results
+    finally:
+        set_active_provider(saved_provider)
+
+    _print_matrix_summary(results, console)
+    return results
+
+
+def _print_matrix_summary(
+    results: dict[tuple[str, str], list[TaskResult]],
+    console: Console,
+) -> None:
+    """One row per task, one column per model; cells show PASS/FAIL + wall_s.
+    Totals row at the bottom so you can see `8/11 vs 3/11 vs 11/11` at a
+    glance."""
+    if not results:
+        return
+
+    # Union of task ids across all models, preserving the order from the
+    # first model's run (which is the discovery order).
+    first_results = next(iter(results.values()))
+    task_order = [r.task_id for r in first_results]
+    seen = set(task_order)
+    for runs in results.values():
+        for r in runs:
+            if r.task_id not in seen:
+                task_order.append(r.task_id)
+                seen.add(r.task_id)
+
+    table = Table(title="Matrix results", show_lines=False)
+    table.add_column("task", style="cyan", no_wrap=True)
+    for provider_name, model_name in results.keys():
+        table.add_column(f"{provider_name}:{model_name}", overflow="fold")
+
+    for task_id in task_order:
+        row = [task_id]
+        for runs in results.values():
+            match = next((r for r in runs if r.task_id == task_id), None)
+            if match is None:
+                row.append("[dim]—[/dim]")
+                continue
+            tag = "[green]PASS[/green]" if match.passed else "[red]FAIL[/red]"
+            row.append(f"{tag} {match.wall_s:.1f}s")
+        table.add_row(*row)
+
+    table.add_section()
+    totals_row = ["[bold]total[/bold]"]
+    for runs in results.values():
+        n_pass = sum(1 for r in runs if r.passed)
+        totals_row.append(f"[bold]{n_pass}/{len(runs)}[/bold]")
+    table.add_row(*totals_row)
+    console.print(table)
+
+
 def list_tasks() -> list[str]:
     return [t["id"] for t in discover_tasks()]
