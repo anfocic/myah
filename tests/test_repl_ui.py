@@ -80,26 +80,43 @@ def test_build_prompt_omits_badges_when_clean():
     assert "debug" not in rendered
 
 
-def test_build_bottom_toolbar_shows_model_ctx_branch_and_modes(monkeypatch):
+def test_build_bottom_toolbar_shows_short_model_pct_and_right_aligned_branch(monkeypatch):
     monkeypatch.setattr(ui, "_current_branch", lambda: "feat/toolbar-pass")
     state = new_state()
     state["ctx_used"] = 1024
-    state["plan_mode"] = True
     rendered = _rendered(build_bottom_toolbar(state))
-    assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "feat/toolbar-pass" in rendered
-    assert "1,024/4,096 ctx 25%" in rendered
-    assert "PLAN" not in rendered
-    assert "DEBUG" not in rendered
+    # Short model: `qwen2.5:7b-instruct` passes through unchanged (no slash);
+    # provider prefix `ollama:` is dropped.
+    assert "qwen2.5:7b-instruct" in rendered
+    assert "ollama:" not in rendered
+    # Percentage only — no `1,024/4,096 ctx` clutter.
+    assert "25%" in rendered
+    assert "1,024/4,096" not in rendered
+    assert "ctx" not in rendered
+    # Branch is the right-most segment (after padding whitespace).
+    assert rendered.rstrip().endswith("feat/toolbar-pass")
 
 
-def test_build_bottom_toolbar_omits_mode_tags_when_no_flags():
+def test_build_bottom_toolbar_strips_org_prefix_on_slashed_models(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        ui,
+        "get_active_provider",
+        lambda: SimpleNamespace(name="openai-compat", model="google/gemma-4-e4b"),
+    )
     state = new_state()
     rendered = _rendered(build_bottom_toolbar(state))
-    assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "0/4,096 ctx 0%" in rendered
-    assert "PLAN" not in rendered
-    assert "DEBUG" not in rendered
+    assert "gemma-4-e4b" in rendered
+    assert "google/" not in rendered
+
+
+def test_build_bottom_toolbar_no_branch_means_no_right_side():
+    state = new_state()
+    rendered = _rendered(build_bottom_toolbar(state))
+    # When no branch, no padding/right side at all.
+    assert "qwen2.5:7b-instruct" in rendered
+    assert "0%" in rendered
+    assert rendered.count(" · ") == 1
 
 
 def test_build_turn_header_uses_turn_count_and_badges(monkeypatch):

@@ -14,6 +14,7 @@ import time
 from collections.abc import Iterable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
@@ -96,9 +97,13 @@ def _mode_labels(state: State) -> list[str]:
 
 
 def _toolbar_model(provider) -> str:
-    """Compact provider:model label for the prompt-time chrome."""
-    model = _clip(provider.model, _MODEL_MAX)
-    return f"{provider.name}:{model}"
+    """Short model name for the toolbar. For org/slug forms like
+    `google/gemma-4-e4b` we keep only the slug after the slash — the org
+    is redundant context on a status line. Non-slashed names (Anthropic
+    `claude-sonnet-4-6`, Ollama tags like `qwen2.5:7b-instruct`) pass
+    through unchanged. Provider prefix is dropped — the user already
+    knows what they picked."""
+    return _clip(provider.model.split("/")[-1], _MODEL_MAX)
 
 
 def _toolbar_pct_style(ctx_used: int, ctx_total: int) -> str:
@@ -175,27 +180,39 @@ def build_session(commands: dict, state: State) -> PromptSession:
 def build_bottom_toolbar(state: State) -> FormattedText:
     """Prompt-toolkit bottom toolbar. Returns FormattedText directly
     because prompt_toolkit doesn't parse rich-style `[dim]...[/dim]`
-    markup — passing a rich-markup string (like `build_turn_footer`
-    returns) leaks the raw tags into the bar, which was the original
-    symptom. Rich markup stays in `build_turn_footer` for `console.print`
-    callers; this function is the prompt_toolkit-native counterpart.
+    markup.
 
-    Layout: `provider:model · branch · u/total ctx N%` — no plan/debug
-    badges (those belong on the turn header where a new reader sees them;
-    repeating them in the toolbar is noise)."""
+    Layout: `<model> · <pct%>` on the left, `<branch>` right-aligned.
+    The absolute `u/total` token count is hidden by default — the `%` is
+    the only number that matters for knowing when trim is near; the
+    exact token count is still available via `/stats` and `/context`."""
     provider = get_active_provider()
     u = state["ctx_used"]
-    segments: list[tuple[str, str]] = [
+    pct_text = f"{_ctx_pct(u, NUM_CTX):.0%}"
+    pct_style = _toolbar_pct_style(u, NUM_CTX)
+
+    left: list[tuple[str, str]] = [
         ("class:dim", _toolbar_model(provider)),
+        ("class:dim", " · "),
+        (pct_style, pct_text),
     ]
     branch = _current_branch()
-    if branch:
-        segments.append(("class:dim", " · "))
-        segments.append(("class:dim", _short_branch(branch)))
-    segments.append(("class:dim", " · "))
-    segments.append(("class:dim", f"{u:,}/{NUM_CTX:,} ctx "))
-    segments.append((_toolbar_pct_style(u, NUM_CTX), f"{_ctx_pct(u, NUM_CTX):.0%}"))
-    return FormattedText(segments)
+    if not branch:
+        return FormattedText(left)
+
+    right_text = _short_branch(branch)
+    # Pad the middle so the branch sits at the right edge. Terminal width
+    # is queried at render time so resizes land on the next paint.
+    try:
+        width = get_app().output.get_size().columns
+    except Exception:
+        width = 80
+    left_len = sum(len(t) for _, t in left)
+    padding = max(1, width - left_len - len(right_text))
+    return FormattedText(left + [
+        ("class:dim", " " * padding),
+        ("class:dim", right_text),
+    ])
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
