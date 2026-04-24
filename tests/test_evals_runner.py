@@ -249,6 +249,115 @@ def test_run_suite_fails_when_forbidden_tool_is_called(monkeypatch, tmp_path, in
     assert "bash" in results[0].check_results[0]["why"]
 
 
+def test_run_suite_passes_on_timeout_if_checks_pass(monkeypatch, tmp_path):
+    """Regression for the "agent fixes the bug then keeps talking until
+    wall_timeout_s" false-negative. After the timeout-decouple, task is
+    PASS iff checks pass — timeout is a notes-column signal only.
+
+    Constructs a provider that blocks in stream_chat, forcing the thread
+    to still be alive at join(). task.checks pass via a trivial callable,
+    so task_passed must be True while task.timeout is True."""
+    import threading as _threading
+
+    from providers import get_active_provider, set_active_provider
+    from providers.base import StreamChunk
+
+    stop = _threading.Event()
+
+    class BlockingProvider:
+        name = "fake-blocking"
+        model = "fake-blocking-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            # Block until the test releases; when wall_timeout_s expires,
+            # the runner's thread.join returns and the outer code continues
+            # without waiting for us to exit. We eventually unblock so this
+            # daemon thread can die cleanly.
+            stop.wait(timeout=5)
+            yield StreamChunk(done=True)
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(BlockingProvider())
+    try:
+        fake_task = {
+            "id": "fake_timeout",
+            "prompt": "do nothing",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "limits": {"max_tool_calls": 4, "wall_timeout_s": 1},
+            "checks": [lambda bundle: True],  # trivial python check, always passes
+        }
+        monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+        monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+        results = runner.run_suite()
+        r = results[0]
+        assert r.timeout is True, "provider should have blocked past wall_timeout_s"
+        assert r.passed is True, (
+            "task must pass when checks pass, regardless of timeout "
+            f"(check_results={r.check_results})"
+        )
+        assert r.error and "wall_timeout_s" in r.error, (
+            "timeout should still surface in r.error for triage"
+        )
+    finally:
+        stop.set()
+        set_active_provider(original)
+
+
+def test_run_suite_fails_on_timeout_if_checks_fail(monkeypatch, tmp_path):
+    """Sibling to the PASS case: when checks fail AND the task times out,
+    task is still FAIL — the checks, not the timeout, are the gate."""
+    import threading as _threading
+
+    from providers import get_active_provider, set_active_provider
+    from providers.base import StreamChunk
+
+    stop = _threading.Event()
+
+    class BlockingProvider:
+        name = "fake-blocking"
+        model = "fake-blocking-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            stop.wait(timeout=5)
+            yield StreamChunk(done=True)
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(BlockingProvider())
+    try:
+        fake_task = {
+            "id": "fake_timeout_fail",
+            "prompt": "do nothing",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "limits": {"max_tool_calls": 4, "wall_timeout_s": 1},
+            "checks": [lambda bundle: False],
+        }
+        monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+        monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+        results = runner.run_suite()
+        r = results[0]
+        assert r.timeout is True
+        assert r.passed is False
+    finally:
+        stop.set()
+        set_active_provider(original)
+
+
 def test_list_tasks_returns_phase1_ids():
     """Phase 1 tasks must all be discoverable, legacy ids must be gone."""
     ids = runner.list_tasks()
