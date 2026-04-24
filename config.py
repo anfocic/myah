@@ -10,7 +10,7 @@ load_dotenv()
 MODEL_PROVIDER = os.environ.get("MIA_PROVIDER", "openai-compat")
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
-OLLAMA_MODEL = "qwen2.5:7b-instruct"
+OLLAMA_MODEL = "qwen/qwen3.5-9b"
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # ── OpenAI-compatible HTTP (llama.cpp server, LM Studio, vLLM, OpenRouter, …)

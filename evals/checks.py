@@ -20,7 +20,9 @@ Python logic without registering a new type.
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -44,7 +46,12 @@ def _tool_trace(check: dict, bundle: dict) -> tuple[bool, str]:
 
 def _content_regex(check: dict, bundle: dict) -> tuple[bool, str]:
     pattern = check["pattern"]
-    flags = re.IGNORECASE if check.get("ignorecase") else 0
+    # MULTILINE so `^`/`$` anchor to line boundaries. Models often prefix
+    # their reply with a blank line or a short lead-in ("Here is the commit
+    # message:\n\nfeat(...): ..."); a strict start-of-string `^` would fail
+    # those even though the line itself matches. `_fs_file_contains` already
+    # uses MULTILINE for the same reason.
+    flags = re.MULTILINE | (re.IGNORECASE if check.get("ignorecase") else 0)
     found = re.search(pattern, bundle["content"], flags) is not None
     if check.get("negate"):
         return (not found, "" if not found else f"pattern unexpectedly matched: {pattern!r}")
@@ -65,6 +72,24 @@ def _content_substr(check: dict, bundle: dict) -> tuple[bool, str]:
 
 def _resolve_path(check: dict, bundle: dict) -> Path:
     return Path(bundle["cwd"]) / check["path"]
+
+
+def _normalize_python_cmd(cmd: str) -> str:
+    """Run eval Python checks with the interpreter running Mia.
+
+    The eval tasks say `python -m pytest ...` because that is the command a
+    human would type. Inside a REPL launched from another environment, plain
+    `python` (or `python3`) can resolve to a global interpreter with no
+    pytest installed. Normalize either prefix to Mia's own interpreter so
+    checks see the same environment the harness runs under.
+    """
+    quoted = shlex.quote(sys.executable)
+    for prefix in ("python3", "python"):
+        if cmd == prefix:
+            return quoted
+        if cmd.startswith(prefix + " "):
+            return f"{quoted} {cmd.removeprefix(prefix + ' ')}"
+    return cmd
 
 
 def _fs_file_equals(check: dict, bundle: dict) -> tuple[bool, str]:
@@ -107,7 +132,7 @@ def _bash_exit_zero(check: dict, bundle: dict) -> tuple[bool, str]:
     # Executable ground truth. Run a shell command in the task's cwd
     # (or a subdir) and pass iff exit == 0. Use for pytest, py_compile,
     # ruff — anything that already exits nonzero on failure.
-    cmd = check["cmd"]
+    cmd = _normalize_python_cmd(check["cmd"])
     cwd = Path(bundle["cwd"])
     cwd_rel = check.get("cwd_rel")
     if cwd_rel:

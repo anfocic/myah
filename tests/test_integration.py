@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import pytest
 
 from agent import run_agent
-from providers import Usage, set_active_provider
+from providers import ProviderError, Usage, set_active_provider
 from providers.base import StreamChunk, ToolCall
 
 
@@ -338,3 +338,43 @@ def test_reasoning_total_is_per_call_not_module_global(install_provider):
     assert "first-call reasoning" in stats_one["reasoning"]
     assert "first-call reasoning" not in stats_two["reasoning"]
     assert stats_two["reasoning"] == "second-call reasoning"
+
+
+def test_provider_error_is_reported_in_stats():
+    """Provider failures should remain machine-readable for callers like evals.
+
+    The REPL can still render the human-facing error and keep going, but an
+    eval runner must not confuse transport failure with a valid empty model
+    response.
+    """
+    from providers import get_active_provider
+
+    class FailingProvider:
+        name = "fake-failing"
+        model = "fake-failing-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            raise ProviderError("simulated outage")
+            yield  # pragma: no cover - makes this a generator
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(FailingProvider())
+    try:
+        response, history, _ctx, stats = run_agent(
+            user_input="hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == ""
+    assert history == []
+    assert stats["provider_error"] == "fake-failing: simulated outage"
