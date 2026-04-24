@@ -44,6 +44,14 @@ EVALS_ROOT = Path(__file__).parent
 FIXTURES_ROOT = EVALS_ROOT / "fixtures"
 RESULTS_ROOT = EVALS_ROOT / "results"
 
+# Grace window after `wall_timeout_s` hits. The per-task grade is already
+# frozen at the timeout moment; the grace join only decides whether the
+# suite can safely continue (if the worker thread finishes naturally,
+# it's no longer mutating cwd/provider state and the next task is safe
+# to start). Tests monkeypatch this to 0 to get strict stop-after-
+# timeout behavior.
+WALL_TIMEOUT_GRACE_S = 5
+
 
 @dataclass
 class TaskResult:
@@ -67,6 +75,11 @@ class TaskResult:
     # in the JSONL so post-hoc analysis can see *why* a task passed/failed
     # when the visible `content` is short (e.g. qwen3 saying "Done.").
     reasoning: str = ""
+    # True iff the worker thread is still running after the grace window.
+    # Distinct from `timeout`: a task can time out at wall_timeout_s but
+    # finish during the grace period — the suite can then safely continue
+    # to the next task. Only an actually-hung thread forces suite-stop.
+    worker_still_alive: bool = False
 
 
 def discover_tasks() -> list[dict]:
@@ -219,7 +232,14 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
         thread.join(wall_timeout_s)
         wall_s = time.monotonic() - t0
         timed_out = thread.is_alive()
-        thread_still_alive[0] = timed_out
+        # Grace window: if the thread is still running after wall_timeout_s,
+        # give it a short second chance to finish cleanly. The grade was
+        # already frozen by the code below using the state at t0+wall_timeout_s,
+        # so this doesn't change pass/fail — it just lets the suite continue
+        # past a model that was 2s from finishing when the timer fired.
+        if timed_out and WALL_TIMEOUT_GRACE_S > 0:
+            thread.join(WALL_TIMEOUT_GRACE_S)
+        thread_still_alive[0] = thread.is_alive()
 
         trace = snapshot()
         over_budget = len(trace) > max_tool_calls
@@ -274,6 +294,7 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
             model=model_name,
             error=error,
             reasoning=stats.get("reasoning", ""),
+            worker_still_alive=thread_still_alive[0],
         )
     finally:
         # Always restore cwd — subsequent tasks need a known root. Skip
@@ -385,13 +406,19 @@ def run_suite(
             console.print(f"[dim]→ running {task['id']}...[/dim]")
             r = _run_one(task, cli_provider, cli_model)
             results.append(r)
-            if r.timeout:
+            # A task that timed out but whose worker finished within the
+            # grace window is safe to follow: the worker is no longer
+            # mutating cwd or the provider, so the next task starts from a
+            # clean process state. Only halt when the worker is genuinely
+            # still running (`worker_still_alive`) — otherwise keep going.
+            if r.worker_still_alive:
                 remaining = len(tasks) - len(results)
                 if remaining:
                     console.print(
-                        "[yellow]↳ stopping eval suite after timeout; "
-                        f"{remaining} task(s) skipped because the timed-out "
-                        "worker may still be running[/yellow]"
+                        "[yellow]↳ stopping eval suite: worker thread for "
+                        f"{r.task_id} is still running after the grace "
+                        f"window; {remaining} task(s) skipped to avoid "
+                        "state corruption[/yellow]"
                     )
                 break
     finally:
