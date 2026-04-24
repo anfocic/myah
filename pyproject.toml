@@ -80,7 +80,7 @@ python_version = "3.11"
 # Pragmatic defaults: catch real bugs without forcing every lambda and
 # pytest fixture to carry annotations. Tighten later by enabling
 # `disallow_untyped_defs` once test helpers are all annotated.
-exclude = ["venv", "build", "dist"]
+exclude = ["venv", "build", "dist", "evals/fixtures"]
 warn_redundant_casts = true
 warn_unused_ignores = true
 check_untyped_defs = false
