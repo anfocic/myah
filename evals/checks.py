@@ -128,6 +128,8 @@ def dispatch(check: dict | Callable, bundle: dict) -> tuple[bool, str]:
     if callable(check):
         return _python({"fn": check}, bundle)
     kind = check.get("type")
+    if not isinstance(kind, str):
+        return False, f"unknown check type: {kind!r}"
     fn = CHECKS.get(kind)
     if fn is None:
         return False, f"unknown check type: {kind!r}"
