@@ -8,6 +8,7 @@ completer. Uses `FileHistory` at `~/.mia_input_history` — not compatible
 with readline's prior format, which is why the filename changed when the
 engine was swapped."""
 
+import colorsys
 import os
 import subprocess
 import time
@@ -94,25 +95,30 @@ def _mode_labels(state: State) -> list[str]:
     return labels
 
 
-def _toolbar_model(provider) -> str:
+def _rprompt_model(provider) -> str:
     """Compact provider:model label for the prompt-time chrome."""
     model = _clip(provider.model, _MODEL_MAX)
     return f"{provider.name}:{model}"
 
 
-def _toolbar_pct_style(ctx_used: int, ctx_total: int) -> str:
-    """Use the screenshot's green emphasis for ctx percentage."""
-    pct = _ctx_pct(ctx_used, ctx_total)
-    if pct < 0.70:
-        return "fg:#a9e68b bold"
-    if pct < 0.85:
-        return "fg:#d6e28f bold"
-    return "fg:#f2c66d bold"
+def _ctx_gradient_style(ctx_used: int, ctx_total: int) -> str:
+    """Smooth green → yellow → red gradient driven by ctx fill.
+
+    HSL hue slides from 120° (green) at 0% through 60° (yellow) at 50%
+    to 0° (red) at 100%. Moderate lightness and saturation keep the
+    color readable rather than neon. Cheap enough to compute on every
+    prompt paint; cache isn't worth the complexity."""
+    pct = max(0.0, min(1.0, _ctx_pct(ctx_used, ctx_total)))
+    hue_deg = 120 * (1 - pct)
+    # colorsys.hls_to_rgb argument order is (h, L, S), all in [0, 1].
+    r, g, b = colorsys.hls_to_rgb(hue_deg / 360.0, 0.55, 0.55)
+    return f"fg:#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x} bold"
 
 
 def build_prompt(state: State) -> FormattedText:
-    """A short prompt keeps the input line focused; status lives in the
-    bottom toolbar instead of competing with what the user is typing."""
+    """Short left prompt — just `You ›`. Status chrome lives on the right
+    via `rprompt` so the input line stays focused on what the user is
+    typing while the context signals stay visible in the same row."""
     return FormattedText(
         [
             ("bold white", "You"),
@@ -121,37 +127,30 @@ def build_prompt(state: State) -> FormattedText:
     )
 
 
-def build_bottom_toolbar(state: State) -> FormattedText:
-    """Persistent prompt-time status line matching the feature display style."""
+_DIM = "fg:ansibrightblack"
+
+
+def build_rprompt(state: State) -> FormattedText:
+    """Right-aligned prompt chrome: `branch · ctx% · provider:model`.
+
+    Percent is the one number with color — a smooth green→yellow→red
+    gradient driven by ctx fill. Exact token counts live in `/context`
+    and the post-turn footer; the rprompt is for at-a-glance awareness
+    while typing. prompt_toolkit hides this automatically if the input
+    grows wide enough to collide with it."""
     provider = get_active_provider()
-    branch = _current_branch()
     ctx_used = state.get("ctx_used", 0)
-    ctx_total = NUM_CTX
-    ctx_pct = _ctx_pct(ctx_used, ctx_total)
+    pct = _ctx_pct(ctx_used, NUM_CTX)
 
-    out: list[tuple[str, str]] = []
-    sep = "fg:#7f839d"
-    branch_style = "fg:#b2b5d0"
-    model_style = "fg:#9ea3c0"
-    count_style = "fg:#7ec9c5 bold"
-    label_style = "fg:#9498b2"
-
-    def add_segment(style: str, text: str) -> None:
-        if out:
-            out.append((sep, " · "))
-        out.append((style, text))
-
+    segments: list[tuple[str, str]] = []
+    branch = _current_branch()
     if branch:
-        add_segment(branch_style, _short_branch(branch))
-    add_segment(model_style, _toolbar_model(provider))
-    out.append((sep, " · "))
-    out.append((count_style, f"{ctx_used:,}/{ctx_total:,}"))
-    out.append((sep, " "))
-    out.append((label_style, "ctx"))
-    out.append((sep, " "))
-    out.append((_toolbar_pct_style(ctx_used, ctx_total), f"{ctx_pct:.0%}"))
-
-    return FormattedText(out)
+        segments.append((_DIM, _short_branch(branch)))
+        segments.append((_DIM, " · "))
+    segments.append((_ctx_gradient_style(ctx_used, NUM_CTX), f"{pct:.0%}"))
+    segments.append((_DIM, " · "))
+    segments.append((_DIM, _rprompt_model(provider)))
+    return FormattedText(segments)
 
 
 class SlashCompleter(Completer):
@@ -180,12 +179,16 @@ class SlashCompleter(Completer):
 def build_session(commands: dict, state: State) -> PromptSession:
     """Construct the REPL's single PromptSession. Held for the lifetime
     of the process so input history persists across turns without hitting
-    disk on every prompt."""
+    disk on every prompt.
+
+    Status chrome rides on `rprompt` (same line as `You ›`), not on a
+    `bottom_toolbar`. Inline chrome keeps the REPL to one visual row and
+    side-steps prompt_toolkit's default reverse-video toolbar styling."""
     return PromptSession(
         history=FileHistory(INPUT_HISTORY_FILE),
         completer=SlashCompleter(commands),
         complete_while_typing=False,
-        bottom_toolbar=lambda: build_bottom_toolbar(state),
+        rprompt=lambda: build_rprompt(state),
     )
 
 
