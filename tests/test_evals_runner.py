@@ -397,14 +397,83 @@ def test_run_suite_fails_on_timeout_if_checks_fail(monkeypatch, tmp_path):
         set_active_provider(original)
 
 
-def test_run_suite_stops_after_timeout(monkeypatch, tmp_path):
-    """A timed-out eval thread cannot be killed safely, so the suite must not
-    start later tasks in the same process. Otherwise the still-running worker
-    can race on process-global cwd/provider state and poison the next task."""
+def test_run_suite_continues_when_worker_finishes_within_grace(monkeypatch, tmp_path):
+    """A task can time out at wall_timeout_s but finish cleanly during
+    the grace window — the suite should continue to the next task in
+    that case, because the worker is no longer mutating shared state."""
+    import threading as _threading
+
+    from providers import get_active_provider, set_active_provider
+    from providers.base import StreamChunk, Usage
+
+    # Plenty of grace so the BlockingProvider's 1s internal wait fits.
+    monkeypatch.setattr(runner, "WALL_TIMEOUT_GRACE_S", 3)
+
+    class SlowProvider:
+        name = "fake-slow"
+        model = "fake-slow-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            # Blocks for 1s, then finishes cleanly. wall_timeout_s=0.1
+            # means the task is flagged `timeout=True`, but the worker
+            # exits during grace → suite continues.
+            _threading.Event().wait(timeout=1.0)
+            yield StreamChunk(content_delta="done")
+            yield StreamChunk(done=True, usage=Usage(prompt_tokens=1, completion_tokens=1))
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(SlowProvider())
+    try:
+        first = {
+            "id": "slow_finishes",
+            "prompt": "slow",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "limits": {"max_tool_calls": 4, "wall_timeout_s": 0.1},
+            "checks": [lambda bundle: True],
+        }
+        second = {
+            "id": "runs_after_grace",
+            "prompt": "fast",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "limits": {"max_tool_calls": 4, "wall_timeout_s": 5},
+            "checks": [lambda bundle: True],
+        }
+        monkeypatch.setattr(runner, "discover_tasks", lambda: [first, second])
+        monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+        results = runner.run_suite()
+        # Both tasks ran. The first timed out but its worker finished in
+        # grace, so the second was allowed to start.
+        assert [r.task_id for r in results] == ["slow_finishes", "runs_after_grace"]
+        assert results[0].timeout is True
+        assert results[0].worker_still_alive is False
+    finally:
+        set_active_provider(original)
+
+
+def test_run_suite_stops_when_worker_is_still_alive(monkeypatch, tmp_path):
+    """A worker thread that's still running after the grace window forces
+    the suite to stop — otherwise a hung `run_agent` would race on
+    process-global cwd / provider state and poison the next task's run."""
     import threading as _threading
 
     from providers import get_active_provider, set_active_provider
     from providers.base import StreamChunk
+
+    # Grace=0 turns the timeout gate strict: the worker is 'still alive'
+    # as soon as wall_timeout_s hits. Otherwise the BlockingProvider's
+    # own internal wait would expire during the grace window and the
+    # suite would continue — correct behavior, but not what this test
+    # wants to exercise.
+    monkeypatch.setattr(runner, "WALL_TIMEOUT_GRACE_S", 0)
 
     stop = _threading.Event()
 
