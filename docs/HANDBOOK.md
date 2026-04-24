@@ -93,6 +93,23 @@ Why it matters:
 - Different context failures happen at different layers.
 - A long conversation, a tool-heavy turn, and a large persistent system prompt are separate problems.
 
+### 4a. Loop Guards
+
+The agentic `while True` is bounded by two harness-owned checks that stop the model from running forever or silently spinning:
+
+- **Iteration cap** (`MAX_AGENT_ITERATIONS`, default 50). Hard ceiling on provider iterations inside a single `run_agent` call. On hit, the loop returns a synthetic assistant message (`[halted: iter_cap] ...`) and `stats["halt_reason"] = "iter_cap"`.
+- **Spinning detection** (`SPIN_WINDOW`, default 3). A sliding window of the most recent `(tool_name, args)` tuples; if they're all equal, the loop halts before executing again. A legitimate re-read of the same file later in a trajectory does not trigger — only *consecutive* identical calls do.
+
+Both reset per-call, so a fresh user turn starts clean. Return shape matches the normal non-error path, so eval runners, subagents, and the REPL need no special handling — they read `stats["halt_reason"]` when they care.
+
+Core code:
+- [`agent/loop.py`](../agent/loop.py)
+- [`config.py`](../config.py)
+
+Why it matters:
+- Small local models are particularly prone to stuck-tool loops; without a cap the only stop is Ctrl-C or a context-window OOM.
+- Returning a named halt reason keeps this observable in eval reports and logs rather than looking like a silent hang.
+
 ## 5. Provider Usage Beats Estimates
 
 Mia starts with a cheap token heuristic, then prefers exact prompt usage reported by the provider when available.
