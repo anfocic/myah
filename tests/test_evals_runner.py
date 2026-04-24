@@ -6,10 +6,12 @@ end-to-end test reuses the scripted FakeProvider from
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from evals import checks as checks_mod
 from evals import runner
+from providers import ProviderError
 from providers.base import ToolCall
 from tests.test_integration import FakeProvider, ScriptedTurn, install_provider  # noqa: F401
 
@@ -61,6 +63,21 @@ def test_content_regex_and_negate():
     # negate: pass when pattern is NOT present
     assert checks_mod.dispatch({"type": "content_regex", "pattern": r"missing", "negate": True}, b)[0]
     assert not checks_mod.dispatch({"type": "content_regex", "pattern": r"config", "negate": True}, b)[0]
+
+
+def test_content_regex_anchors_are_multiline():
+    """`^` / `$` anchor to line boundaries, not string boundaries. Models
+    routinely prefix a reply with a lead-in line ("Here is the commit
+    message:\\n\\nfeat(x): ..."); an anchored regex like `^(feat|fix)...`
+    should still match the line below. Matches the commit_msg_from_diff
+    task's real-world pattern."""
+    b = _bundle(
+        content="Here is the commit message:\n\nfeat(repl): swap chrome"
+    )
+    pattern = r"^(feat|fix|refactor|docs|test|chore|perf|build|ci|style)(\(.+?\))?!?:"
+    assert checks_mod.dispatch(
+        {"type": "content_regex", "pattern": pattern}, b
+    )[0]
 
 
 def test_content_substr():
@@ -136,6 +153,28 @@ def test_bash_exit_zero_pass_and_fail(tmp_path: Path):
         {"type": "bash_exit_zero", "cmd": "false"}, b
     )
     assert not ok and "exit 1" in why
+
+
+def test_bash_exit_zero_uses_mia_python_for_plain_python_cmd(tmp_path: Path):
+    b = _bundle(cwd=tmp_path)
+    cmd = "python -c \"import sys; from pathlib import Path; Path('py.txt').write_text(sys.executable)\""
+    assert checks_mod.dispatch({"type": "bash_exit_zero", "cmd": cmd}, b)[0]
+    assert (tmp_path / "py.txt").read_text() == sys.executable
+
+
+def test_normalize_python_cmd_quotes_current_interpreter():
+    quoted = checks_mod.shlex.quote(sys.executable)
+    assert checks_mod._normalize_python_cmd("python -m pytest tests/") == (
+        f"{quoted} -m pytest tests/"
+    )
+    # `python3` gets the same rewrite — the asymmetry between `python` and
+    # `python3` only bites you when the latter resolves to a different
+    # interpreter than Mia's venv, which is exactly when it matters most.
+    assert checks_mod._normalize_python_cmd("python3 -m pytest") == (
+        f"{quoted} -m pytest"
+    )
+    # Unrelated shell commands pass through unchanged.
+    assert checks_mod._normalize_python_cmd("ruff check .") == "ruff check ."
 
 
 def test_bash_exit_zero_respects_cwd(tmp_path: Path):
@@ -355,6 +394,99 @@ def test_run_suite_fails_on_timeout_if_checks_fail(monkeypatch, tmp_path):
         assert r.passed is False
     finally:
         stop.set()
+        set_active_provider(original)
+
+
+def test_run_suite_stops_after_timeout(monkeypatch, tmp_path):
+    """A timed-out eval thread cannot be killed safely, so the suite must not
+    start later tasks in the same process. Otherwise the still-running worker
+    can race on process-global cwd/provider state and poison the next task."""
+    import threading as _threading
+
+    from providers import get_active_provider, set_active_provider
+    from providers.base import StreamChunk
+
+    stop = _threading.Event()
+
+    class BlockingProvider:
+        name = "fake-blocking"
+        model = "fake-blocking-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            stop.wait(timeout=5)
+            yield StreamChunk(done=True)
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(BlockingProvider())
+    try:
+        first = {
+            "id": "fake_timeout",
+            "prompt": "block",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "limits": {"max_tool_calls": 4, "wall_timeout_s": 1},
+            "checks": [lambda bundle: True],
+        }
+        second = {
+            "id": "must_not_run",
+            "prompt": "should not execute after timeout",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "checks": [lambda bundle: False],
+        }
+        monkeypatch.setattr(runner, "discover_tasks", lambda: [first, second])
+        monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+        results = runner.run_suite()
+        assert [r.task_id for r in results] == ["fake_timeout"]
+        assert results[0].timeout is True
+    finally:
+        stop.set()
+        set_active_provider(original)
+
+
+def test_run_suite_marks_provider_error_as_error(monkeypatch, tmp_path):
+    from providers import get_active_provider, set_active_provider
+
+    class FailingProvider:
+        name = "fake-failing"
+        model = "fake-failing-v1"
+
+        def stream_chat(self, messages, tools, num_ctx):
+            raise ProviderError("simulated outage")
+            yield  # pragma: no cover - makes this a generator
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(FailingProvider())
+    try:
+        fake_task = {
+            "id": "provider_down",
+            "prompt": "do work",
+            "setup": {"fs": None},
+            "permission": "allow_all",
+            "checks": [],
+        }
+        monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+        monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+        results = runner.run_suite()
+        r = results[0]
+        assert not r.passed
+        assert r.error == "provider_error: fake-failing: simulated outage"
+        assert r.content == ""
+    finally:
         set_active_provider(original)
 
 

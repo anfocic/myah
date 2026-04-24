@@ -3,6 +3,8 @@ data-plane split (CONCEPTS §22): slash input is handled by the REPL without
 the model in the loop. Every handler takes `(state, arg="")` — commands
 that don't use `arg` ignore it, so `handle_slash` can dispatch uniformly
 without inspecting function signatures."""
+import os
+
 from rich.panel import Panel
 
 from agent import apply_summary, compact_history
@@ -288,12 +290,18 @@ def cmd_eval(state: State, arg: str = "") -> None:
     compare models. `run_suite` saves/restores the active provider itself,
     so the REPL session isn't disturbed if a task pins a different one."""
     # Imported lazily so the eval deps (rich.table, task modules, fixtures)
-    # only load when the user actually runs /eval.
-    from evals.runner import list_tasks, run_suite
+    # only load when the user actually runs /eval. Reloading keeps the REPL
+    # dev loop honest: eval runner fixes take effect without restarting Mia.
+    import importlib
+
+    from evals import runner as eval_runner
+
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        eval_runner = importlib.reload(eval_runner)
 
     parts = arg.strip().split()
     if parts and parts[0] == "list":
-        for tid in list_tasks():
+        for tid in eval_runner.list_tasks():
             console.print(f"  {tid}")
         return
 
@@ -301,7 +309,7 @@ def cmd_eval(state: State, arg: str = "") -> None:
     provider = get_active_provider()
     scope = f"{len(task_ids)} task(s)" if task_ids else "full suite"
     console.print(f"[dim]↳ running {scope} on {provider.model} ({provider.name})...[/dim]")
-    run_suite(task_ids=task_ids, console=console)
+    eval_runner.run_suite(task_ids=task_ids, console=console)
 
 
 def cmd_model(state: State, arg: str = "") -> None:

@@ -215,6 +215,7 @@ def run_agent(
                     "ttft_ms": None,
                     "completion_tokens": None,
                     "tok_per_s": None,
+                    "provider_error": f"{provider.name}: {e}",
                     "reasoning": "\n\n".join(reasoning_total),
                 },
             )
