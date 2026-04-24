@@ -490,12 +490,58 @@ def test_run_suite_marks_provider_error_as_error(monkeypatch, tmp_path):
         set_active_provider(original)
 
 
-def test_list_tasks_returns_phase1_ids():
-    """Phase 1 tasks must all be discoverable, legacy ids must be gone."""
-    ids = runner.list_tasks()
-    assert "find_symbol_all" in ids
-    assert "fix_failing_test" in ids
-    assert "tdd_new_fn" in ids
-    assert "commit_msg_from_diff" in ids
+def test_list_tasks_returns_all_known_ids():
+    """Every task module must be discoverable; legacy ids must be gone."""
+    ids = set(runner.list_tasks())
+    # Phase 1.
+    assert {"commit_msg_from_diff", "find_symbol_all",
+            "fix_failing_test", "tdd_new_fn"} <= ids
+    # Phase 2 — capability gaps added later.
+    assert {"edit_rename_symbol", "scoped_bugfix", "pagination_read",
+            "plan_mode_plan_only", "glob_resolve_bare_name"} <= ids
+    # Legacy names that were removed.
     assert "find_string" not in ids
     assert "edit_rename" not in ids
+
+
+def test_every_discovered_task_has_valid_shape(tmp_path):
+    """Static sanity check on every TASK dict: required keys present,
+    fixture dir exists if `setup.fs` is set, `checks` is a list of
+    dicts or callables, `limits` are positive ints. Catches typos
+    (e.g. `"setup": {"fx": ...}`) that would otherwise silently skip
+    the fixture copy at runtime."""
+    required = {"id", "prompt", "setup", "provider", "plan_mode",
+                "permission", "limits", "checks"}
+    fixtures_root = Path(runner.FIXTURES_ROOT)
+    for task in runner.discover_tasks():
+        missing = required - task.keys()
+        assert not missing, f"task {task.get('id')!r} missing keys: {missing}"
+
+        assert isinstance(task["id"], str) and task["id"]
+        assert isinstance(task["prompt"], str) and task["prompt"]
+        assert isinstance(task["plan_mode"], bool)
+
+        fs_fixture = (task.get("setup") or {}).get("fs")
+        if fs_fixture:
+            assert (fixtures_root / fs_fixture).is_dir(), (
+                f"task {task['id']!r} references missing fixture "
+                f"{fs_fixture!r}"
+            )
+
+        limits = task["limits"]
+        assert isinstance(limits.get("max_tool_calls"), int)
+        assert isinstance(limits.get("wall_timeout_s"), int)
+        assert limits["max_tool_calls"] > 0
+        assert limits["wall_timeout_s"] > 0
+
+        checks = task["checks"]
+        assert isinstance(checks, list) and checks, f"{task['id']} has no checks"
+        for check in checks:
+            if callable(check):
+                continue
+            assert isinstance(check, dict) and "type" in check, (
+                f"{task['id']} has malformed check: {check!r}"
+            )
+            assert check["type"] in checks_mod.CHECKS, (
+                f"{task['id']} uses unknown check type: {check['type']!r}"
+            )

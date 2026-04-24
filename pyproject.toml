@@ -52,6 +52,10 @@ packages = ["agent", "providers", "tools", "repl"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Fixtures under evals/fixtures/ are deliberate source material (some
+# contain planted bugs, some are pure data like a 300-line filler file
+# named `long.py`). Lint warnings there are noise, not signal.
+extend-exclude = ["evals/fixtures"]
 
 [tool.ruff.lint]
 select = [
