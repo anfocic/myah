@@ -68,3 +68,16 @@ TOOL_RESULT_MAX_BYTES = 10_000
 # explicitly setting it lets the harness own the ceiling. Providers that don't
 # take max_tokens (Ollama) ignore it.
 MAX_COMPLETION_TOKENS = int(os.environ.get("MIA_MAX_COMPLETION_TOKENS", "4096"))
+
+# Hard ceiling on the number of provider iterations a single `run_agent`
+# call may perform before the loop gives up. A small model that gets stuck
+# in a tool-call-tool-call loop would otherwise run until the user hits
+# Ctrl-C or the context window explodes. On hit, run_agent returns a
+# synthetic assistant message explaining the halt.
+MAX_AGENT_ITERATIONS = int(os.environ.get("MIA_MAX_ITERS", "50"))
+
+# Window size for the spinning-call guard: if the model emits the same
+# (tool_name, args) tuple this many *consecutive* times, the loop halts
+# before executing again. Sliding-window — a legitimate re-read of the
+# same file inside a longer trajectory does not trigger.
+SPIN_WINDOW = 3

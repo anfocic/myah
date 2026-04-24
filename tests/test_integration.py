@@ -378,3 +378,96 @@ def test_provider_error_is_reported_in_stats():
     assert response == ""
     assert history == []
     assert stats["provider_error"] == "fake-failing: simulated outage"
+
+
+# ---------- loop guards: iteration cap + spinning detection ----------
+
+def _looping_tool_script(n: int, call: ToolCall) -> list[ScriptedTurn]:
+    """Script `n` turns, each a bare tool call to `call`. Used by the
+    iter-cap test: the model never surrenders, so only the cap halts it."""
+    return [
+        ScriptedTurn(content_chunks=[], tool_calls=[call])
+        for _ in range(n)
+    ]
+
+
+def test_loop_halts_at_iteration_cap(install_provider, monkeypatch):
+    """If the model never emits content (always tool-only turns), the loop
+    must not run forever. The cap is a hard upper bound; on hit, the loop
+    returns with `stats['halt_reason'] == 'iter_cap'` and a synthetic
+    assistant message explaining the halt."""
+    # Shrink the cap for the test so we don't need 50 scripted turns.
+    import agent.loop as loop_mod
+    monkeypatch.setattr(loop_mod, "MAX_AGENT_ITERATIONS", 3)
+
+    # Alternate between two distinct calls so the spin guard never fires;
+    # the only thing that can halt this script is the iteration cap.
+    alt_calls = [
+        ToolCall(name="read_file", arguments={"path": "a.py"}),
+        ToolCall(name="read_file", arguments={"path": "b.py"}),
+    ]
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[alt_calls[i % 2]])
+        for i in range(5)
+    ])
+
+    response, history, _ctx, stats = run_agent(
+        user_input="read it",
+        tools=[],
+        execute_tool=_execute_tool_factory({"read_file": "contents"}),
+        history=[],
+        permission_check=lambda n, a: True,
+    )
+
+    assert stats["halt_reason"] == "iter_cap"
+    assert response.startswith("[halted: iter_cap]")
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] == response
+
+
+def test_loop_halts_on_spinning(install_provider):
+    """Three consecutive identical tool calls should trigger the spin guard
+    before the fourth runs. The synthetic assistant message names the
+    repeated call so the user knows which call stuck."""
+    repeated = ToolCall(name="read_file", arguments={"path": "missing.py"})
+    # Script 5 identical turns so there's no ambiguity about the cap firing.
+    install_provider(_looping_tool_script(5, repeated))
+
+    response, history, _ctx, stats = run_agent(
+        user_input="read it",
+        tools=[],
+        execute_tool=_execute_tool_factory({"read_file": "file not found"}),
+        history=[],
+        permission_check=lambda n, a: True,
+    )
+
+    assert stats["halt_reason"] == "spinning"
+    assert response.startswith("[halted: spinning]")
+    assert "read_file" in response
+    assert len(history) == 2
+
+
+def test_loop_does_not_halt_on_legitimate_repeats(install_provider):
+    """Re-reading the same file inside a longer trajectory must NOT trigger
+    the spin guard. Only three *consecutive* identical calls do."""
+    call_a = ToolCall(name="read_file", arguments={"path": "a.py"})
+    call_b = ToolCall(name="read_file", arguments={"path": "b.py"})
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[call_a]),
+        ScriptedTurn(content_chunks=[], tool_calls=[call_b]),
+        ScriptedTurn(content_chunks=[], tool_calls=[call_a]),
+        ScriptedTurn(content_chunks=["Done reading."]),
+    ])
+
+    response, _history, _ctx, stats = run_agent(
+        user_input="read a and b",
+        tools=[],
+        execute_tool=_execute_tool_factory({"read_file": "ok"}),
+        history=[],
+        permission_check=lambda n, a: True,
+    )
+
+    assert response == "Done reading."
+    assert stats.get("halt_reason") is None
