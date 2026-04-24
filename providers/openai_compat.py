@@ -22,6 +22,9 @@ Two tricks live in here that Ollama's SDK hid for free:
 """
 
 import json
+import os
+import shutil
+import subprocess
 from collections.abc import Iterator
 
 import httpx
@@ -148,6 +151,79 @@ class OpenAICompatProvider(Provider):
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
         )
+
+    def ensure_exclusive(self) -> None:
+        """Unload every other model resident on LM Studio, if this base URL
+        is pointed at one. Generic OpenAI-compat servers (vLLM, llama.cpp,
+        OpenRouter, first-party OpenAI) don't expose a portable unload, so
+        the call is a no-op there.
+
+        LM Studio's `lms` CLI is the supported programmatic path: `lms ps
+        --json` lists loaded models, `lms unload <identifier>` evicts one.
+        Best-effort — missing CLI, non-zero exit, or parse failure all fall
+        through silently. The point of this method is to keep two large
+        models from sitting in VRAM at the same time when the user swaps
+        via /model or when /eval pins a different provider.
+        """
+        if not self._is_lm_studio():
+            return
+        lms = _find_lms_binary()
+        if lms is None:
+            return
+        try:
+            proc = subprocess.run(
+                [lms, "ps", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return
+        try:
+            loaded = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(loaded, list):
+            return
+        for entry in loaded:
+            if not isinstance(entry, dict):
+                continue
+            # `identifier` is the stable field across LM Studio versions;
+            # `modelKey` / `path` are fallbacks in case a future release
+            # renames the top-level key.
+            ident = entry.get("identifier") or entry.get("modelKey") or entry.get("path")
+            if not ident or ident == self.model:
+                continue
+            try:
+                subprocess.run(
+                    [lms, "unload", ident],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+
+    def _is_lm_studio(self) -> bool:
+        # LM Studio defaults to port 1234 on localhost; no other server in
+        # the OpenAI-compat zoo uses that port by convention. Overridable via
+        # env so a remote LM Studio install can opt in explicitly.
+        if os.environ.get("MIA_OPENAI_COMPAT_IS_LM_STUDIO") == "1":
+            return True
+        base = self._base.lower()
+        return ":1234" in base and ("localhost" in base or "127.0.0.1" in base)
+
+
+def _find_lms_binary() -> str | None:
+    # Prefer whatever `lms` is on PATH; fall back to LM Studio's default
+    # install path so the feature works even from a shell that hasn't
+    # sourced the lmstudio shim.
+    found = shutil.which("lms")
+    if found:
+        return found
+    default = os.path.expanduser("~/.lmstudio/bin/lms")
+    return default if os.path.isfile(default) else None
 
 
 def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:

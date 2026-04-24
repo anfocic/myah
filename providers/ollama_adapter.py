@@ -111,6 +111,34 @@ class OllamaProvider(Provider):
             ),
         )
 
+    def ensure_exclusive(self) -> None:
+        """Unload every other model currently resident on this Ollama server.
+
+        The harness wants a single-model invariant: two large models on one
+        machine can OOM the GPU or thrash VRAM. `ollama ps` enumerates what
+        the daemon has loaded; `keep_alive=0` on a generate call tells it to
+        evict that model immediately.
+
+        Best-effort — the daemon being down, or `ps`/`generate` failing, is
+        not a fatal error. Worst case the user still has two models loaded,
+        which is the state they were in before this call anyway.
+        """
+        try:
+            resp = self._client.ps()
+        except Exception:
+            return
+        models = getattr(resp, "models", None) or []
+        for m in models:
+            name = getattr(m, "model", None) or getattr(m, "name", None)
+            if not name or name == self.model:
+                continue
+            try:
+                self._client.generate(
+                    model=name, prompt="", keep_alive=0, stream=False
+                )
+            except Exception:
+                pass
+
 
 def _strip_internal_tool_calls(messages: list[dict]) -> list[dict]:
     """agent.py stores tool_calls on assistant messages as `{"name", "arguments"}`
