@@ -50,7 +50,7 @@ else:
 # Context window budget — set explicitly so we know the real limit.
 # qwen2.5:7b default is 4096; bump to 8192 if your Ollama build supports it.
 # For openai-compat this is advisory — most servers ignore num_ctx in the body.
-NUM_CTX = 16384
+NUM_CTX = 32768
 
 # Extra delay per streamed chunk, in milliseconds. Set to 0 to stream at the
 # provider's native rate. A small delay (~8ms) slows output ~30% so it's easier

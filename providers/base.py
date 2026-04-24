@@ -27,6 +27,13 @@ class StreamChunk:
     # Incremental text the UI renders as it arrives. "" (never None) so callers
     # can truthiness-check without guarding against None.
     content_delta: str = ""
+    # Incremental reasoning / chain-of-thought that some providers surface on
+    # a separate channel (LM Studio for qwen3's `<think>...</think>` via
+    # `reasoning_content`, DeepSeek R1, etc.). Kept distinct from
+    # `content_delta` so the loop can display it for observability without
+    # folding it into the assistant's history — reasoning is ephemeral and
+    # poisoning the next turn with it degrades quality on most models.
+    reasoning_delta: str = ""
     # Only ever populated when a *complete* tool call is available. Adapters
     # that receive tool calls as incremental deltas (OpenAI) buffer internally
     # and emit the finished call here in one chunk.

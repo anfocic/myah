@@ -89,6 +89,10 @@ def run_agent(
 
     start = time.time()
     ctx_used = estimate_tokens(messages)
+    # Accumulated across every iteration of the while-loop so callers (evals,
+    # /debug, subagent reporters) can see the reasoning from every turn in
+    # a multi-tool trajectory, not only the final answer's reasoning.
+    reasoning_total: list[str] = []
 
     while True:
         # Intra-turn context relief. Fires when a tool-heavy turn has racked
@@ -121,6 +125,8 @@ def run_agent(
             thinking.start()
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_rendering = False
         tool_calls: list = []
         final_usage: Usage | None = None
         first_content_seen = False
@@ -130,10 +136,38 @@ def run_agent(
         provider = get_active_provider()
         try:
             for chunk in provider.stream_chat(messages, tools, NUM_CTX):
+                if chunk.reasoning_delta:
+                    # Swap the spinner for an in-line dim stream the first
+                    # time reasoning shows up. Every subsequent chunk just
+                    # prints incrementally so the user sees the model
+                    # thinking in real time without the markdown renderer
+                    # (which is reserved for the final assistant reply).
+                    if thinking:
+                        thinking.stop()
+                        thinking = None
+                    if not reasoning_rendering and console:
+                        console.print("↳ thinking: ", end="", style="dim italic")
+                        reasoning_rendering = True
+                    reasoning_parts.append(chunk.reasoning_delta)
+                    if console:
+                        # markup=False so a `[bracket]` in the reasoning
+                        # trace isn't parsed as a Rich tag; style carries
+                        # the formatting so the delta itself stays literal.
+                        console.print(
+                            chunk.reasoning_delta,
+                            end="", style="dim italic", soft_wrap=True, markup=False,
+                        )
+
                 if chunk.content_delta:
                     if thinking:
                         thinking.stop()
                         thinking = None
+                    if reasoning_rendering and console:
+                        # Reasoning is done once real content starts. Close
+                        # the dim block with a newline so the markdown
+                        # renderer below starts cleanly.
+                        console.print()
+                        reasoning_rendering = False
                     if not first_content_seen:
                         first_content_seen = True
                         ttft_ms = int((time.time() - start) * 1000)
@@ -146,9 +180,17 @@ def run_agent(
 
                 if chunk.done:
                     final_usage = chunk.usage
+
+            # Reasoning-only turn (no content, no tool_calls): close the dim
+            # block so the prompt doesn't land on the same line.
+            if reasoning_rendering and console:
+                console.print()
+                reasoning_rendering = False
         except KeyboardInterrupt:
             if thinking:
                 thinking.stop()
+            if reasoning_rendering and console:
+                console.print()
             if renderer:
                 renderer.finish("".join(content_parts))
             elif first_content_seen and console:
@@ -157,6 +199,8 @@ def run_agent(
         except ProviderError as e:
             if thinking:
                 thinking.stop()
+            if reasoning_rendering and console:
+                console.print()
             if renderer:
                 renderer.finish("".join(content_parts))
             elif first_content_seen and console:
@@ -171,6 +215,7 @@ def run_agent(
                     "ttft_ms": None,
                     "completion_tokens": None,
                     "tok_per_s": None,
+                    "reasoning": "\n\n".join(reasoning_total),
                 },
             )
 
@@ -181,6 +226,9 @@ def run_agent(
             thinking = None
 
         content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+        if reasoning:
+            reasoning_total.append(reasoning)
         if renderer:
             renderer.finish(content)
         log_response(
@@ -189,6 +237,7 @@ def run_agent(
             content=content,
             tool_calls=tool_calls,
             ttft_ms=ttft_ms,
+            reasoning=reasoning,
         )
 
         ctx_used = (final_usage.prompt_tokens if final_usage else None) or estimate_tokens(messages)
@@ -247,6 +296,10 @@ def run_agent(
                 "ttft_ms": ttft_ms,
                 "completion_tokens": completion_tokens,
                 "tok_per_s": tok_per_s,
+                # Full chain-of-thought across every turn in this
+                # trajectory, joined by blank lines. Empty string for
+                # non-reasoning models. Read by eval runner + /debug.
+                "reasoning": "\n\n".join(reasoning_total),
             }
             return content, history, ctx_used, stats
 

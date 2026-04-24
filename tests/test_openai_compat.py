@@ -67,6 +67,36 @@ def test_tool_message_with_no_preceding_assistant_gets_fresh_id():
     assert out[0]["tool_call_id"].startswith("call_")
 
 
+def test_sse_reasoning_content_becomes_reasoning_delta():
+    """LM Studio (qwen3) and DeepSeek-R1 route chain-of-thought to a
+    separate `reasoning_content` delta. Parsing it into `reasoning_delta`
+    is what keeps the loop from silently discarding the model's actual
+    output — for reasoning-mode qwen3, `content` is often "" while the
+    reasoning holds hundreds of tokens.
+    """
+    lines = iter([
+        "data: " + json.dumps({
+            "choices": [{"delta": {"reasoning_content": "step one: "}}]
+        }),
+        "data: " + json.dumps({
+            "choices": [{"delta": {"reasoning_content": "analyze."}}]
+        }),
+        "data: " + json.dumps({
+            "choices": [{"delta": {"content": "Done."}}]
+        }),
+        "data: [DONE]",
+    ])
+    chunks = list(_parse_sse(lines))
+    reasoning = "".join(c.reasoning_delta for c in chunks if c.reasoning_delta)
+    content = "".join(c.content_delta for c in chunks if c.content_delta)
+    assert reasoning == "step one: analyze."
+    assert content == "Done."
+    # Reasoning and content must arrive on distinct chunks so the loop
+    # can style them separately — if they were bundled we'd smear the
+    # dim reasoning stream over the markdown renderer's final reply.
+    assert all(not (c.reasoning_delta and c.content_delta) for c in chunks)
+
+
 def test_bad_streamed_tool_call_json_raises_provider_error():
     lines = iter([
         "data: " + json.dumps({
