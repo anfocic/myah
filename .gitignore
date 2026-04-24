@@ -18,6 +18,9 @@ coverage.xml
 # Logs
 logs/
 
+# Eval results (per-run JSONL dumps)
+evals/results/
+
 # OS
 .DS_Store
 

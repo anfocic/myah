@@ -1,0 +1,137 @@
+"""Check dispatch for the eval runner.
+
+Each check function takes `(check, bundle)` and returns `(passed, why)`.
+`bundle` is the post-run snapshot the runner assembles:
+
+    {
+        "content":    str,                       # final assistant message
+        "trace":      list[dict],                # one entry per tool call
+        "stats":      dict,                      # from run_agent's 4th return
+        "ctx_used":   int,                       # from run_agent's 3rd return
+        "cwd":        pathlib.Path,              # task's working dir
+        "fixture_dir": pathlib.Path | None,      # source of fs fixtures
+    }
+
+A check dict needs a "type" that matches a key in CHECKS below. A bare
+callable is also accepted by `dispatch`, for tasks that want custom
+Python logic without registering a new type.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+
+def _tool_trace(check: dict, bundle: dict) -> tuple[bool, str]:
+    called = [e["name"] for e in bundle["trace"]]
+    must_call = check.get("must_call", [])
+    must_not_call = check.get("must_not_call", [])
+    missing = [n for n in must_call if n not in called]
+    forbidden = [n for n in must_not_call if n in called]
+    if missing:
+        return False, f"expected calls not made: {missing} (called: {called})"
+    if forbidden:
+        return False, f"forbidden calls made: {forbidden}"
+    limit = check.get("call_count_max")
+    if limit is not None and len(called) > limit:
+        return False, f"too many tool calls: {len(called)} > {limit}"
+    return True, ""
+
+
+def _content_regex(check: dict, bundle: dict) -> tuple[bool, str]:
+    pattern = check["pattern"]
+    flags = re.IGNORECASE if check.get("ignorecase") else 0
+    found = re.search(pattern, bundle["content"], flags) is not None
+    if check.get("negate"):
+        return (not found, "" if not found else f"pattern unexpectedly matched: {pattern!r}")
+    return (found, "" if found else f"pattern not found: {pattern!r}")
+
+
+def _content_substr(check: dict, bundle: dict) -> tuple[bool, str]:
+    needle = check["value"]
+    content = bundle["content"]
+    if check.get("ignorecase"):
+        found = needle.lower() in content.lower()
+    else:
+        found = needle in content
+    if check.get("negate"):
+        return (not found, "" if not found else f"substring unexpectedly present: {needle!r}")
+    return (found, "" if found else f"substring not found: {needle!r}")
+
+
+def _resolve_path(check: dict, bundle: dict) -> Path:
+    return Path(bundle["cwd"]) / check["path"]
+
+
+def _fs_file_equals(check: dict, bundle: dict) -> tuple[bool, str]:
+    target = _resolve_path(check, bundle)
+    if not target.exists():
+        return False, f"file not found: {target}"
+    actual = target.read_bytes()
+    if "expected" in check:
+        expected = (
+            check["expected"].encode() if isinstance(check["expected"], str) else check["expected"]
+        )
+    elif "expected_path" in check:
+        src = Path(check["expected_path"])
+        if not src.is_absolute() and bundle.get("fixture_dir"):
+            src = bundle["fixture_dir"] / src
+        expected = src.read_bytes()
+    else:
+        return False, "fs_file_equals needs `expected` or `expected_path`"
+    if actual == expected:
+        return True, ""
+    return False, f"file contents differ: {target}"
+
+
+def _fs_file_contains(check: dict, bundle: dict) -> tuple[bool, str]:
+    target = _resolve_path(check, bundle)
+    if not target.exists():
+        return False, f"file not found: {target}"
+    text = target.read_text(errors="replace")
+    flags = re.MULTILINE | (re.IGNORECASE if check.get("ignorecase") else 0)
+    found = re.search(check["pattern"], text, flags) is not None
+    if check.get("negate"):
+        return (
+            not found,
+            "" if not found else f"pattern unexpectedly matched in {target}: {check['pattern']!r}",
+        )
+    return (found, "" if found else f"pattern not found in {target}: {check['pattern']!r}")
+
+
+def _python(check: dict, bundle: dict) -> tuple[bool, str]:
+    # Escape hatch: task supplies a `fn` callable that returns bool or
+    # (bool, why). Keeps bespoke logic inline with the task instead of
+    # forcing a new check type for every one-off.
+    fn: Callable[[dict], Any] = check["fn"]
+    result = fn(bundle)
+    if isinstance(result, tuple):
+        ok, why = result
+        return bool(ok), str(why)
+    return bool(result), "" if result else "python check returned falsy"
+
+
+CHECKS: dict[str, Callable[[dict, dict], tuple[bool, str]]] = {
+    "tool_trace": _tool_trace,
+    "content_regex": _content_regex,
+    "content_substr": _content_substr,
+    "fs_file_equals": _fs_file_equals,
+    "fs_file_contains": _fs_file_contains,
+    "python": _python,
+}
+
+
+def dispatch(check: dict | Callable, bundle: dict) -> tuple[bool, str]:
+    if callable(check):
+        return _python({"fn": check}, bundle)
+    kind = check.get("type")
+    fn = CHECKS.get(kind)
+    if fn is None:
+        return False, f"unknown check type: {kind!r}"
+    try:
+        return fn(check, bundle)
+    except Exception as e:
+        return False, f"{kind} check raised: {type(e).__name__}: {e}"
