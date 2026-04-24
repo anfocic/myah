@@ -18,6 +18,7 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 
 from config import NUM_CTX
 from providers import get_active_provider
@@ -145,6 +146,16 @@ class SlashCompleter(Completer):
                 yield Completion(cmd, start_position=-len(buf))
 
 
+_TOOLBAR_STYLE = Style.from_dict({
+    # Default prompt_toolkit renders the toolbar as a solid reverse-video
+    # bar. Too loud for a muted status line — switch to plain-bg text that
+    # blends with the scroll above it.
+    "bottom-toolbar": "noreverse",
+    "bottom-toolbar.text": "noreverse",
+    "dim": "fg:ansibrightblack noreverse",
+})
+
+
 def build_session(commands: dict, state: State) -> PromptSession:
     """Construct the REPL's single PromptSession. Held for the lifetime
     of the process so input history persists across turns without hitting
@@ -157,6 +168,7 @@ def build_session(commands: dict, state: State) -> PromptSession:
         completer=SlashCompleter(commands),
         complete_while_typing=False,
         bottom_toolbar=lambda: build_bottom_toolbar(state),
+        style=_TOOLBAR_STYLE,
     )
 
 

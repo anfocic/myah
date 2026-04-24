@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent import READ_ONLY_TOOLS
 from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
-from agent.status import log_response, status_line
+from agent.status import log_response
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens, truncate_tool_result
 from config import NUM_CTX
@@ -110,10 +110,15 @@ def run_agent(
                     )
         if debug and console:
             _debug_dump_messages(console, messages)
-        if console:
-            # Under patch_stdout, an animated region fights the pinned
-            # prompt; an append-only log line avoids the cursor war.
-            console.print(status_line("Thinking..."))
+
+        # Animated spinner instead of a static "Thinking..." line. The old
+        # concern was that rich.live.Live fights patch_stdout's pinned
+        # prompt — but that's only an issue while prompt_toolkit is
+        # actively prompting. During run_agent() we own the terminal, so
+        # Live works cleanly and erases itself when we .stop() it.
+        thinking = console.status("[yellow]Thinking...[/yellow]", spinner="dots") if console else None
+        if thinking:
+            thinking.start()
 
         content_parts: list[str] = []
         tool_calls: list = []
@@ -126,6 +131,9 @@ def run_agent(
         try:
             for chunk in provider.stream_chat(messages, tools, NUM_CTX):
                 if chunk.content_delta:
+                    if thinking:
+                        thinking.stop()
+                        thinking = None
                     if not first_content_seen:
                         first_content_seen = True
                         ttft_ms = int((time.time() - start) * 1000)
@@ -139,12 +147,16 @@ def run_agent(
                 if chunk.done:
                     final_usage = chunk.usage
         except KeyboardInterrupt:
+            if thinking:
+                thinking.stop()
             if renderer:
                 renderer.finish("".join(content_parts))
             elif first_content_seen and console:
                 console.print()
             raise
         except ProviderError as e:
+            if thinking:
+                thinking.stop()
             if renderer:
                 renderer.finish("".join(content_parts))
             elif first_content_seen and console:
@@ -161,6 +173,12 @@ def run_agent(
                     "tok_per_s": None,
                 },
             )
+
+        # Tool-only turn (no content) — the spinner never saw a token to
+        # trigger its stop; clear it now before tool output starts.
+        if thinking:
+            thinking.stop()
+            thinking = None
 
         content = "".join(content_parts)
         if renderer:
@@ -328,8 +346,12 @@ def _run_tools_parallel(
         # across same-turn edits against the same workspace state.
         run_serially = any(name not in READ_ONLY_TOOLS for _, name, _, _ in approved)
 
+        # No separate "Running tools (n/m)" status line in either branch —
+        # on_tool_start / on_tool_end already render each tool's own block
+        # (`● name args` / `  └ summary`), which carries the same progress
+        # signal plus the result content.
         if run_serially:
-            for done, (i, name, args, meta) in enumerate(approved, start=1):
+            for i, name, args, meta in approved:
                 ok, payload, duration_s = _timed_tool_call(execute_tool, name, args)
                 end_meta = meta | {"duration_s": duration_s}
                 if ok:
@@ -341,15 +363,12 @@ def _run_tools_parallel(
                     msg = f"Tool raised: {type(e).__name__}: {e}"
                     results[i] = msg
                     _notify_end(name, args, msg, False, end_meta)
-                if console:
-                    console.print(status_line("Running tools", progress=(done, len(approved))))
         else:
             with ThreadPoolExecutor(max_workers=len(approved)) as ex:
                 future_to_idx = {
                     ex.submit(_timed_tool_call, execute_tool, name, args): (i, name, args, meta)
                     for (i, name, args, meta) in approved
                 }
-                done = 0
                 for fut in as_completed(future_to_idx):
                     i, name, args, meta = future_to_idx[fut]
                     ok, payload, duration_s = fut.result()
@@ -364,8 +383,5 @@ def _run_tools_parallel(
                         msg = f"Tool raised: {type(e).__name__}: {e}"
                         results[i] = msg
                         _notify_end(name, args, msg, False, end_meta)
-                    done += 1
-                    if console:
-                        console.print(status_line("Running tools", progress=(done, len(approved))))
 
     return [r if r is not None else "" for r in results]

@@ -12,7 +12,7 @@ import time
 
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from agent import apply_summary, run_agent, status_line, trim_history
+from agent import apply_summary, run_agent, trim_history
 from config import NUM_CTX
 from display import on_tool_end, on_tool_start
 from permissions import check_permission
@@ -132,8 +132,11 @@ def main() -> None:
                     state["history"], state["ctx_used"], NUM_CTX
                 )
                 if dropped:
-                    console.print(status_line("Summarizing dropped turns..."))
-                    state["history"] = apply_summary(state["history"], dropped)
+                    with console.status(
+                        "[yellow]Summarizing dropped turns...[/yellow]",
+                        spinner="dots",
+                    ):
+                        state["history"] = apply_summary(state["history"], dropped)
             except KeyboardInterrupt:
                 console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
                 continue
