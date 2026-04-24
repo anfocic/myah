@@ -6,9 +6,8 @@ just feed it hand-written event sequences that mirror what the
 Anthropic API emits. Message translation is a pure function."""
 import json
 
-import pytest
-
 import httpx
+import pytest
 
 from providers import ProviderError, ToolCall
 from providers.anthropic_adapter import (
