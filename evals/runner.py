@@ -233,8 +233,14 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
             "fixture_dir": fixture_dir,
         }
 
+        # Correctness = checks + no harness exception. Timeout and
+        # over-budget go in the summary table's `notes` column but don't
+        # force task_passed=False: a model that fixes the bug and then
+        # keeps talking until wall_timeout_s has still done the work.
+        # Tasks that care about budget/speed should enforce it at the
+        # check level (tool_trace.call_count_max, or a future stats_bound).
         check_results = []
-        task_passed = not timed_out and not over_budget and not error
+        task_passed = not error
         for check in task.get("checks", []):
             ok, why = checks_mod.dispatch(check, bundle)
             kind = check.get("type") if isinstance(check, dict) else "callable"
