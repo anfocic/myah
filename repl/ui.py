@@ -8,18 +8,17 @@ completer. Uses `FileHistory` at `~/.mia_input_history` — not compatible
 with readline's prior format, which is why the filename changed when the
 engine was swapped."""
 
+import colorsys
 import os
 import subprocess
 import time
 from collections.abc import Iterable
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
 
 from config import NUM_CTX
 from providers import get_active_provider
@@ -106,15 +105,18 @@ def _toolbar_model(provider) -> str:
     return _clip(provider.model.split("/")[-1], _MODEL_MAX)
 
 
-def _toolbar_pct_style(ctx_used: int, ctx_total: int) -> str:
-    """Muted below 70% (no reason to shout when ctx is comfortable),
-    warm when approaching trim threshold, hot when auto-trim fires."""
-    pct = _ctx_pct(ctx_used, ctx_total)
-    if pct < 0.70:
-        return "class:dim"
-    if pct < 0.85:
-        return "fg:#d6e28f bold"
-    return "fg:#f2c66d bold"
+def _ctx_gradient_style(ctx_used: int, ctx_total: int) -> str:
+    """Smooth green → yellow → red gradient driven by ctx fill.
+
+    HSL hue slides from 120° (green) at 0% through 60° (yellow) at 50%
+    to 0° (red) at 100%. Moderate lightness and saturation keep the
+    color readable rather than neon. Cheap enough to compute on every
+    prompt paint; cache isn't worth the complexity."""
+    pct = max(0.0, min(1.0, _ctx_pct(ctx_used, ctx_total)))
+    hue_deg = 120 * (1 - pct)
+    # colorsys.hls_to_rgb argument order is (h, L, S), all in [0, 1].
+    r, g, b = colorsys.hls_to_rgb(hue_deg / 360.0, 0.55, 0.55)
+    return f"fg:#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x} bold"
 
 
 def build_prompt(state: State) -> FormattedText:
@@ -151,68 +153,47 @@ class SlashCompleter(Completer):
                 yield Completion(cmd, start_position=-len(buf))
 
 
-_TOOLBAR_STYLE = Style.from_dict({
-    # Default prompt_toolkit renders the toolbar as a solid reverse-video
-    # bar. Too loud for a muted status line — switch to plain-bg text that
-    # blends with the scroll above it.
-    "bottom-toolbar": "noreverse",
-    "bottom-toolbar.text": "noreverse",
-    "dim": "fg:ansibrightblack noreverse",
-})
-
-
 def build_session(commands: dict, state: State) -> PromptSession:
     """Construct the REPL's single PromptSession. Held for the lifetime
     of the process so input history persists across turns without hitting
-    disk on every prompt."""
-    # Pass a callable so prompt_toolkit re-renders the toolbar on every
-    # paint — otherwise it snapshots the value at session-construction
-    # time and the ctx/pct never changes.
+    disk on every prompt.
+
+    Status chrome lives on `rprompt` (same line as `You >`), not in a
+    `bottom_toolbar` at the terminal bottom. Keeps the chrome inline
+    with the input — one line of UI, not two — and side-steps
+    prompt_toolkit's default reverse-video toolbar styling."""
     return PromptSession(
         history=FileHistory(INPUT_HISTORY_FILE),
         completer=SlashCompleter(commands),
         complete_while_typing=False,
-        bottom_toolbar=lambda: build_bottom_toolbar(state),
-        style=_TOOLBAR_STYLE,
+        rprompt=lambda: build_rprompt(state),
     )
 
 
-def build_bottom_toolbar(state: State) -> FormattedText:
-    """Prompt-toolkit bottom toolbar. Returns FormattedText directly
-    because prompt_toolkit doesn't parse rich-style `[dim]...[/dim]`
-    markup.
+_DIM = "fg:ansibrightblack"
 
-    Layout: `<model> · <pct%>` on the left, `<branch>` right-aligned.
-    The absolute `u/total` token count is hidden by default — the `%` is
-    the only number that matters for knowing when trim is near; the
-    exact token count is still available via `/stats` and `/context`."""
+
+def build_rprompt(state: State) -> FormattedText:
+    """Right-aligned prompt chrome, rendered inline with `You >`.
+
+    Format: `<model> · <pct%> · <branch>`. Pct is the one number with
+    a color (green→red gradient on ctx fill) — exact token counts live
+    in `/stats` and `/context`. prompt_toolkit hides this automatically
+    if the input grows wide enough to collide with it."""
     provider = get_active_provider()
     u = state["ctx_used"]
     pct_text = f"{_ctx_pct(u, NUM_CTX):.0%}"
-    pct_style = _toolbar_pct_style(u, NUM_CTX)
-
-    left: list[tuple[str, str]] = [
-        ("class:dim", _toolbar_model(provider)),
-        ("class:dim", " · "),
+    pct_style = _ctx_gradient_style(u, NUM_CTX)
+    segments: list[tuple[str, str]] = [
+        (_DIM, _toolbar_model(provider)),
+        (_DIM, " · "),
         (pct_style, pct_text),
     ]
     branch = _current_branch()
-    if not branch:
-        return FormattedText(left)
-
-    right_text = _short_branch(branch)
-    # Pad the middle so the branch sits at the right edge. Terminal width
-    # is queried at render time so resizes land on the next paint.
-    try:
-        width = get_app().output.get_size().columns
-    except Exception:
-        width = 80
-    left_len = sum(len(t) for _, t in left)
-    padding = max(1, width - left_len - len(right_text))
-    return FormattedText(left + [
-        ("class:dim", " " * padding),
-        ("class:dim", right_text),
-    ])
+    if branch:
+        segments.append((_DIM, " · "))
+        segments.append((_DIM, _short_branch(branch)))
+    return FormattedText(segments)
 
 
 def ctx_tag(ctx_used: int, ctx_total: int) -> str:
