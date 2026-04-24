@@ -24,6 +24,10 @@ evals/results/
 # OS
 .DS_Store
 
+# Local env / secrets
+.env
+.env.local
+
 # Editor
 .vscode/
 .idea/

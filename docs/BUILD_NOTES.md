@@ -1,4 +1,4 @@
-# Concepts — Agent Harness
+# Build Notes — Agent Harness
 
 Running notes on every concept introduced while building this harness. Read top-to-bottom to follow the build chronologically.
 

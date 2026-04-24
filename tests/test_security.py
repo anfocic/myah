@@ -101,6 +101,23 @@ def test_search_tools_enforce_guard(tmp_path, monkeypatch):
     assert glob_tool("*", "/etc").startswith("Refusing path outside cwd")
 
 
+def test_search_tools_skip_symlink_escapes(tmp_path, monkeypatch):
+    from tools.search import glob as glob_tool
+    from tools.search import grep
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    link = cwd / "link.txt"
+    link.symlink_to(outside)
+
+    monkeypatch.chdir(cwd)
+
+    assert grep("secret", ".", output_mode="content") == "No matches."
+    assert glob_tool("link.txt") == "No files matching 'link.txt'"
+
+
 # ── Injection scan ──────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text, expected_label", [

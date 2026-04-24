@@ -21,6 +21,7 @@ from tools.harness import harness_info
 from tools.search import glob, grep
 from tools.subagent import spawn_subagent
 from tools.utils import get_current_time
+from tools.web_search import web_search
 
 # Tool schemas are nested dicts (OpenAI function-calling format). The
 # explicit `list[dict[str, Any]]` annotation keeps mypy from inferring a
@@ -157,6 +158,27 @@ tools: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "web_search",
+            "description": "Search the live public web. Use this for current events, recent facts, or external information that may not be in the model's training data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The web search query to run.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "How many results to return (1-20, default 5).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
             "description": "Run a shell command. Use for git, running tests, builds, package management, or any shell-only operation. Returns stdout, stderr, and exit code. Requires user permission for each call.",
             "parameters": {
@@ -280,6 +302,11 @@ def make_execute_tool(state: State, permission_check=None):
                     args.get("path", "."),
                     args.get("glob"),
                     args.get("output_mode", "files_with_matches"),
+                )
+            elif name == "web_search":
+                return web_search(
+                    args["query"],
+                    int(args.get("max_results", 5)),
                 )
             elif name == "bash":
                 return run_bash(

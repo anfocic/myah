@@ -26,7 +26,17 @@ from collections.abc import Iterator
 
 import httpx
 
+from config import MAX_COMPLETION_TOKENS
+
 from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
+
+# Per-message framing overhead for OpenAI chat models (from the OpenAI
+# cookbook). 3 tokens wrap each message (<|im_start|>role<|im_sep|>content
+# <|im_end|>); the assistant reply is primed with another 3. Exact for
+# GPT-4/GPT-4o/GPT-3.5-turbo; a close approximation for non-OpenAI models
+# (DeepSeek, Qwen) that still ride the chatml-ish structure.
+_PER_MESSAGE_TOKENS = 3
+_PER_REPLY_TOKENS = 3
 
 
 class OpenAICompatProvider(Provider):
@@ -52,6 +62,7 @@ class OpenAICompatProvider(Provider):
             "messages": _translate_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
+            "max_tokens": MAX_COMPLETION_TOKENS,
         }
         if tools:
             payload["tools"] = tools  # OpenAI schema happens to match Ollama's
@@ -72,11 +83,53 @@ class OpenAICompatProvider(Provider):
         except httpx.TimeoutException as e:
             raise ProviderError(f"openai-compat timeout: {e}") from e
 
+    def count_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> int:
+        """Local tiktoken count. Exact for OpenAI chat models; very close
+        for other BPE-based servers (DeepSeek, Qwen via llama.cpp) that
+        share cl100k_base-ish vocabularies. No network call."""
+        try:
+            import tiktoken
+        except ImportError as e:
+            raise ProviderError(
+                "tiktoken not installed; run `pip install tiktoken`"
+            ) from e
+        try:
+            enc = tiktoken.encoding_for_model(self.model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+
+        translated = _translate_messages(messages)
+        total = 0
+        for msg in translated:
+            total += _PER_MESSAGE_TOKENS
+            for key, value in msg.items():
+                if value is None:
+                    continue
+                # tool_calls on assistant msgs is a list of dicts; serialize.
+                text = value if isinstance(value, str) else json.dumps(value)
+                total += len(enc.encode(text))
+                if key == "name":
+                    # Named messages pay a small extra overhead per cookbook.
+                    total += 1
+        total += _PER_REPLY_TOKENS
+
+        if tools:
+            # Tools get folded into the system prompt server-side in an
+            # opaque format; JSON-encoding the schema is the canonical
+            # approximation used across the ecosystem.
+            total += len(enc.encode(json.dumps(tools)))
+        return total
+
     def chat(self, messages: list[dict], num_ctx: int) -> tuple[str, Usage]:
         payload = {
             "model": self.model,
             "messages": _translate_messages(messages),
             "stream": False,
+            "max_tokens": MAX_COMPLETION_TOKENS,
         }
         try:
             r = self._client.post(
@@ -140,14 +193,24 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
                 slot["arg_parts"].append(fn["arguments"])
 
         if choice.get("finish_reason") == "tool_calls" and tool_buf:
-            yield StreamChunk(
-                tool_calls=[
-                    ToolCall(
-                        name=slot["name"],
-                        arguments=json.loads("".join(slot["arg_parts"]) or "{}"),
+            parsed_tool_calls: list[ToolCall] = []
+            for _, slot in sorted(tool_buf.items()):
+                raw = "".join(slot["arg_parts"]) or "{}"
+                try:
+                    arguments = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    raise ProviderError(
+                        f"bad streamed tool-call JSON: {e}: {raw[:200]}"
+                    ) from e
+                if not isinstance(arguments, dict):
+                    raise ProviderError(
+                        "bad streamed tool-call JSON: expected an object"
                     )
-                    for _, slot in sorted(tool_buf.items())
-                ]
+                parsed_tool_calls.append(
+                    ToolCall(name=slot["name"], arguments=arguments)
+                )
+            yield StreamChunk(
+                tool_calls=parsed_tool_calls
             )
             tool_buf.clear()
 

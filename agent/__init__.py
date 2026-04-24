@@ -14,7 +14,7 @@ both of those import it — top-level breaks the cycle."""
 # short-circuited so the model can investigate (glob/grep/read) while
 # planning, but can't mutate state until plan mode is turned off.
 READ_ONLY_TOOLS = frozenset(
-    {"glob", "grep", "read_file", "get_current_time", "harness_info"}
+    {"glob", "grep", "read_file", "get_current_time", "harness_info", "web_search"}
 )
 
 

@@ -11,6 +11,8 @@ Everything the loop needs about context/tokens/status/prompt is imported
 from siblings in this package. The loop doesn't know about rich styling,
 the REPL's State dict, or where messages came from — those all belong
 upstairs in main.py / repl/."""
+
+import inspect
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,9 +21,46 @@ from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response, status_line
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens, truncate_tool_result
-from config import NUM_CTX, STREAM_DELAY_MS
+from config import NUM_CTX
+from display import StreamingMarkdown
 from providers import ProviderError, Usage, get_active_provider
 from security import annotate_if_injected
+
+
+def _call_with_optional_meta(func, *args, meta: dict | None = None):
+    """Call a callback that may or may not accept tool metadata.
+
+    Older tests and helper closures still use `(name, args)` callables, while
+    the TUI callbacks now take an extra `meta` payload with tool id/timing.
+    This adapter keeps both shapes working without forcing unrelated code to
+    change."""
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return func(*args)
+
+    params = sig.parameters.values()
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        return func(*args, meta=meta)
+    if "meta" in sig.parameters:
+        return func(*args, meta=meta)
+
+    positional = [
+        p for p in sig.parameters.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= len(args) + 1:
+        return func(*args, meta)
+    return func(*args)
+
+
+def _timed_tool_call(execute_tool, name: str, args: dict) -> tuple[bool, object, float]:
+    """Run one tool and always return `(ok, payload, duration_s)`."""
+    started_at = time.monotonic()
+    try:
+        return True, execute_tool(name, args), time.monotonic() - started_at
+    except Exception as e:
+        return False, e, time.monotonic() - started_at
 
 
 def run_agent(
@@ -56,14 +95,19 @@ def run_agent(
         # up enough results to push ctx past the threshold. Does nothing on
         # iteration 1 (no tool messages yet) or when the count is small.
         if ctx_used > MICROCOMPACT_CTX_THRESHOLD * NUM_CTX:
+            ctx_before = ctx_used
             n_elided = microcompact(messages)
             if n_elided:
-                if console:
-                    console.print(
-                        f"[dim yellow]↳ microcompact: elided "
-                        f"{n_elided} old tool result(s)[/dim yellow]"
-                    )
                 ctx_used = estimate_tokens(messages)
+                if console:
+                    threshold = int(MICROCOMPACT_CTX_THRESHOLD * NUM_CTX)
+                    console.print(
+                        f"[dim yellow]↳ microcompact fired: ctx {ctx_before} → "
+                        f"{ctx_used} (threshold {threshold} = "
+                        f"{int(MICROCOMPACT_CTX_THRESHOLD * 100)}% of "
+                        f"NUM_CTX={NUM_CTX}); elided {n_elided} old tool "
+                        f"result(s)[/dim yellow]"
+                    )
         if debug and console:
             _debug_dump_messages(console, messages)
         if console:
@@ -76,6 +120,7 @@ def run_agent(
         final_usage: Usage | None = None
         first_content_seen = False
         ttft_ms: int | None = None
+        renderer = StreamingMarkdown(console) if console else None
 
         provider = get_active_provider()
         try:
@@ -84,20 +129,9 @@ def run_agent(
                     if not first_content_seen:
                         first_content_seen = True
                         ttft_ms = int((time.time() - start) * 1000)
-                        if console:
-                            # Blank separator before the response begins.
-                            console.print()
                     content_parts.append(chunk.content_delta)
-                    # Stream tokens as plain text so they scroll above the
-                    # pinned prompt under patch_stdout. Markdown formatting
-                    # is applied once at end of stream (see below) because
-                    # in-place re-rendering via rich.live.Live is incompatible
-                    # with prompt_toolkit's patched stdout — they both drive
-                    # the terminal's cursor and fight over it.
-                    if console:
-                        console.out(chunk.content_delta, end="", highlight=False)
-                        if STREAM_DELAY_MS:
-                            time.sleep(STREAM_DELAY_MS / 1000)
+                    if renderer:
+                        renderer.update("".join(content_parts))
 
                 if chunk.tool_calls:
                     tool_calls.extend(chunk.tool_calls)
@@ -105,26 +139,32 @@ def run_agent(
                 if chunk.done:
                     final_usage = chunk.usage
         except KeyboardInterrupt:
-            # Let main.py decide how to render the abort. history is
-            # untouched because we only append on successful completion.
+            if renderer:
+                renderer.finish("".join(content_parts))
+            elif first_content_seen and console:
+                console.print()
             raise
         except ProviderError as e:
-            if console:
-                console.print(
-                    f"\n[red]Provider error ({provider.name}):[/red] {e}"
-                )
-            # Same discipline as Ctrl+C: history untouched, return to REPL.
-            return "", history, ctx_used, {
-                "ttft_ms": None, "completion_tokens": None, "tok_per_s": None,
-            }
-        finally:
-            if first_content_seen and console:
-                # Newline terminates the plain-text streaming chunk line so
-                # the post-turn status line doesn't land at the end of the
-                # last token.
+            if renderer:
+                renderer.finish("".join(content_parts))
+            elif first_content_seen and console:
                 console.print()
+            if console:
+                console.print(f"\n[red]Provider error ({provider.name}):[/red] {e}")
+            return (
+                "",
+                history,
+                ctx_used,
+                {
+                    "ttft_ms": None,
+                    "completion_tokens": None,
+                    "tok_per_s": None,
+                },
+            )
 
         content = "".join(content_parts)
+        if renderer:
+            renderer.finish(content)
         log_response(
             final_usage,
             messages,
@@ -133,23 +173,21 @@ def run_agent(
             ttft_ms=ttft_ms,
         )
 
-        ctx_used = (
-            (final_usage.prompt_tokens if final_usage else None)
-            or estimate_tokens(messages)
-        )
+        ctx_used = (final_usage.prompt_tokens if final_usage else None) or estimate_tokens(messages)
 
         if tool_calls:
-            messages.append({
-                "role": "assistant",
-                "content": content,
-                # Carry the tool calls on the assistant message. Ollama ignores
-                # unknown fields; the openai-compat adapter uses them to build
-                # the OpenAI-shaped tool_calls array with synthesized IDs.
-                "tool_calls": [
-                    {"name": tc.name, "arguments": tc.arguments}
-                    for tc in tool_calls
-                ],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    # Carry the tool calls on the assistant message. Ollama ignores
+                    # unknown fields; the openai-compat adapter uses them to build
+                    # the OpenAI-shaped tool_calls array with synthesized IDs.
+                    "tool_calls": [
+                        {"name": tc.name, "arguments": tc.arguments} for tc in tool_calls
+                    ],
+                }
+            )
             results = _run_tools_parallel(
                 tool_calls,
                 execute_tool,
@@ -169,9 +207,7 @@ def run_agent(
                 # 2. truncate_tool_result caps the size so a 5MB read_file
                 #    can't blow the context window (§20).
                 safe = annotate_if_injected(content_str)
-                messages.append(
-                    {"role": "tool", "content": truncate_tool_result(safe)}
-                )
+                messages.append({"role": "tool", "content": truncate_tool_result(safe)})
         else:
             if not content:
                 content = "Done."
@@ -185,9 +221,7 @@ def run_agent(
             stream_s = None
             if ttft_ms is not None:
                 stream_s = (time.time() - start) - (ttft_ms / 1000)
-            completion_tokens = (
-                final_usage.completion_tokens if final_usage else None
-            )
+            completion_tokens = final_usage.completion_tokens if final_usage else None
             tok_per_s = None
             if completion_tokens and stream_s and stream_s > 0:
                 tok_per_s = completion_tokens / stream_s
@@ -202,9 +236,7 @@ def run_agent(
 def _debug_dump_messages(console, messages: list) -> None:
     """Print the full messages array being sent to the provider. Cheap to
     render — rich will wrap long content. Toggled by /debug in main.py."""
-    console.print(
-        f"[dim]── debug: {len(messages)} messages → provider ──[/dim]"
-    )
+    console.print(f"[dim]── debug: {len(messages)} messages → provider ──[/dim]")
     for i, m in enumerate(messages):
         role = m.get("role", "?")
         content = m.get("content", "") or ""
@@ -235,22 +267,22 @@ def _run_tools_parallel(
     them since no work would happen.
 
     on_tool_start/on_tool_end are optional display callbacks. start fires
-    in request order; end fires in completion order (parallel). end receives
-    args so the display layer can correlate (e.g. render a diff from the
-    same old_string/new_string it saw in start). ok=False means denied,
+    in request order; end fires in completion order (parallel). Both receive
+    a small `meta` payload with a stable tool id (`T01`, `T02`, ...) and, on
+    end, the execution duration in seconds. ok=False means denied,
     plan-blocked, or raised."""
 
-    def _notify_start(name, args):
+    def _notify_start(name, args, meta):
         if on_tool_start:
             try:
-                on_tool_start(name, args)
+                _call_with_optional_meta(on_tool_start, name, args, meta=meta)
             except Exception:
                 pass  # display callback must never break the loop
 
-    def _notify_end(name, args, result, ok):
+    def _notify_end(name, args, result, ok, meta):
         if on_tool_end:
             try:
-                on_tool_end(name, args, result, ok)
+                _call_with_optional_meta(on_tool_end, name, args, result, ok, meta=meta)
             except Exception:
                 pass
 
@@ -262,51 +294,78 @@ def _run_tools_parallel(
     # up the REPL's permission prompt — otherwise bash/edit/write would
     # execute silently with no human in the loop.
     if permission_check is None:
-        permission_check = lambda name, args: name in READ_ONLY_TOOLS
+        permission_check = lambda name, args, meta=None: name in READ_ONLY_TOOLS
 
-    approved: list[tuple[int, str, dict]] = []
+    approved: list[tuple[int, str, dict, dict]] = []
     for i, tc in enumerate(tool_calls):
         name = tc.name
         args = tc.arguments
-        _notify_start(name, args)
+        meta = {
+            "tool_id": f"T{i + 1:02d}",
+            "index": i + 1,
+        }
+        _notify_start(name, args, meta)
         if plan_mode and name not in READ_ONLY_TOOLS:
+            readonly = ", ".join(sorted(READ_ONLY_TOOLS))
             msg = (
                 f"Plan mode: {name} is a mutating tool and was not executed. "
-                "Use read-only tools (glob, grep, read_file, harness_info) to "
+                f"Use read-only tools ({readonly}) to "
                 "investigate, then describe the proposed changes."
             )
             results[i] = msg
-            _notify_end(name, args, msg, False)
+            _notify_end(name, args, msg, False, meta)
             continue
-        if not permission_check(name, args):
+        if not _call_with_optional_meta(permission_check, name, args, meta=meta):
             msg = "User denied this tool call."
             results[i] = msg
-            _notify_end(name, args, msg, False)
+            _notify_end(name, args, msg, False, meta)
         else:
-            approved.append((i, name, args))
+            approved.append((i, name, args, meta))
 
     if approved:
-        with ThreadPoolExecutor(max_workers=len(approved)) as ex:
-            future_to_idx = {
-                ex.submit(execute_tool, name, args): (i, name, args)
-                for (i, name, args) in approved
-            }
-            done = 0
-            for fut in as_completed(future_to_idx):
-                i, name, args = future_to_idx[fut]
-                try:
-                    out = str(fut.result())
+        # Once a batch contains any mutating tool, run the whole batch
+        # serially in request order. This avoids stale reads and write races
+        # across same-turn edits against the same workspace state.
+        run_serially = any(name not in READ_ONLY_TOOLS for _, name, _, _ in approved)
+
+        if run_serially:
+            for done, (i, name, args, meta) in enumerate(approved, start=1):
+                ok, payload, duration_s = _timed_tool_call(execute_tool, name, args)
+                end_meta = meta | {"duration_s": duration_s}
+                if ok:
+                    out = str(payload)
                     results[i] = out
-                    _notify_end(name, args, out, True)
-                except Exception as e:
-                    # Tool errors are data, not exceptions — let the model recover.
+                    _notify_end(name, args, out, True, end_meta)
+                else:
+                    e = payload
                     msg = f"Tool raised: {type(e).__name__}: {e}"
                     results[i] = msg
-                    _notify_end(name, args, msg, False)
-                done += 1
+                    _notify_end(name, args, msg, False, end_meta)
                 if console:
-                    console.print(
-                        status_line("Running tools", progress=(done, len(approved)))
-                    )
+                    console.print(status_line("Running tools", progress=(done, len(approved))))
+        else:
+            with ThreadPoolExecutor(max_workers=len(approved)) as ex:
+                future_to_idx = {
+                    ex.submit(_timed_tool_call, execute_tool, name, args): (i, name, args, meta)
+                    for (i, name, args, meta) in approved
+                }
+                done = 0
+                for fut in as_completed(future_to_idx):
+                    i, name, args, meta = future_to_idx[fut]
+                    ok, payload, duration_s = fut.result()
+                    end_meta = meta | {"duration_s": duration_s}
+                    if ok:
+                        out = str(payload)
+                        results[i] = out
+                        _notify_end(name, args, out, True, end_meta)
+                    else:
+                        e = payload
+                        # Tool errors are data, not exceptions — let the model recover.
+                        msg = f"Tool raised: {type(e).__name__}: {e}"
+                        results[i] = msg
+                        _notify_end(name, args, msg, False, end_meta)
+                    done += 1
+                    if console:
+                        console.print(status_line("Running tools", progress=(done, len(approved))))
 
     return [r if r is not None else "" for r in results]

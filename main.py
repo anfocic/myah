@@ -25,7 +25,7 @@ from repl.persistence import (
 )
 from repl.state import State, new_state
 from repl.tool_registry import make_execute_tool, tools
-from repl.ui import build_prompt, build_session, ctx_tag
+from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
 
 
 def _parse_args() -> argparse.Namespace:
@@ -40,7 +40,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    session = build_session(SLASH_COMMANDS)
+    state: State = new_state()
+    session = build_session(SLASH_COMMANDS, state)
     console.print(
         "[bold]Mia ready.[/bold] "
         "Type [italic dim]/help[/italic dim] for commands, "
@@ -49,7 +50,6 @@ def main() -> None:
     # State is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds `history`, so keeping a separate
     # local would silently drift once the first auto-trim fires.
-    state: State = new_state()
     # Session persistence is opt-in on both ends: without --resume we
     # neither load nor save, so a forgotten flag can't silently overwrite
     # a session you wanted to keep. Weak local models also handle short
@@ -76,8 +76,8 @@ def main() -> None:
     # gate into the child run_agent. `_session_allowed` inside permissions.py
     # is the only mutable state, kept as a module global there, so a single
     # closure for the whole process is correct.
-    def perm_check(name, args):
-        return check_permission(console, name, args)
+    def perm_check(name, args, meta=None):
+        return check_permission(console, name, args, meta=meta)
 
     execute_tool = make_execute_tool(state, permission_check=perm_check)
 
@@ -118,6 +118,7 @@ def main() -> None:
             state["snapshots"].append(copy.deepcopy(state["history"]))
             dropped: list = []
             try:
+                console.print(build_turn_header(state))
                 response, state["history"], state["ctx_used"], stats = run_agent(
                     user_input, tools, execute_tool, state["history"],
                     console=console,
@@ -127,6 +128,7 @@ def main() -> None:
                     on_tool_end=on_tool_end,
                     debug=state["debug"],
                 )
+                ctx_before_trim = state["ctx_used"]
                 state["history"], dropped = trim_history(
                     state["history"], state["ctx_used"], NUM_CTX
                 )
@@ -137,15 +139,16 @@ def main() -> None:
                 console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
                 continue
 
-            tag = ctx_tag(state["ctx_used"], NUM_CTX)
             elapsed = time.time() - start
-            rate = stats.get("tok_per_s")
-            rate_s = f" · [dim]{rate:.0f} tok/s[/dim]" if rate else ""
-            console.print(f"[dim]{tag} · {elapsed:.1f}s[/dim]{rate_s}")
+            console.print(build_turn_footer(state["ctx_used"], NUM_CTX, elapsed, stats))
             if dropped:
+                threshold = int(0.8 * NUM_CTX)
                 console.print(
-                    f"[dim yellow]↳ trimmed {len(dropped) // 2} old turn(s), "
-                    "summarized into context[/dim yellow]"
+                    f"[dim yellow]↳ trim_history fired: ctx was "
+                    f"{ctx_before_trim} (> threshold {threshold} = 80% of "
+                    f"NUM_CTX={NUM_CTX}); dropped {len(dropped) // 2} "
+                    f"turn(s), summarized into context; will re-settle "
+                    f"after next provider call[/dim yellow]"
                 )
             console.print()
 
