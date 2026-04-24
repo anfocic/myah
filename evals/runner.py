@@ -206,22 +206,43 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
 
         result_box: dict[str, Any] = {}
 
+        # Single-turn tasks expose `prompt`; multi-turn tasks expose
+        # `turns` (a list of user messages delivered in order, each one
+        # picking up the prior turn's history). Exactly one must be set;
+        # validated by test_every_discovered_task_has_valid_shape.
+        turns: list[str] = list(task.get("turns") or [task["prompt"]])
+
         def _invoke():
             try:
-                content, _hist, ctx_used, stats = run_agent(
-                    user_input=task["prompt"],
-                    tools=ALL_TOOLS,
-                    execute_tool=make_execute_tool(new_state(), permission_check),
-                    history=[],
-                    console=None,
-                    permission_check=permission_check,
-                    plan_mode=task.get("plan_mode", False),
-                    on_tool_start=on_start,
-                    on_tool_end=on_end,
-                )
-                result_box["content"] = content
-                result_box["ctx_used"] = ctx_used
-                result_box["stats"] = stats or {}
+                history: list = []
+                last_content = ""
+                last_ctx_used = 0
+                last_stats: dict = {}
+                turn_contents: list[str] = []
+                # One long-lived execute_tool closure so `state` (ctx_used,
+                # history) would persist if harness_info were invoked across
+                # turns. Subagent spawns also inherit the same permission gate.
+                exec_tool = make_execute_tool(new_state(), permission_check)
+                for user_turn in turns:
+                    content, history, ctx_used, stats = run_agent(
+                        user_input=user_turn,
+                        tools=ALL_TOOLS,
+                        execute_tool=exec_tool,
+                        history=history,
+                        console=None,
+                        permission_check=permission_check,
+                        plan_mode=task.get("plan_mode", False),
+                        on_tool_start=on_start,
+                        on_tool_end=on_end,
+                    )
+                    turn_contents.append(content)
+                    last_content = content
+                    last_ctx_used = ctx_used
+                    last_stats = stats or {}
+                result_box["content"] = last_content
+                result_box["turn_contents"] = turn_contents
+                result_box["ctx_used"] = last_ctx_used
+                result_box["stats"] = last_stats
             except Exception as e:
                 result_box["error"] = f"{type(e).__name__}: {e}"
                 result_box["traceback"] = traceback.format_exc()
@@ -245,6 +266,11 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
         over_budget = len(trace) > max_tool_calls
 
         content = result_box.get("content", "")
+        # Per-turn contents so multi-turn checks can inspect intermediate
+        # replies. Single-turn tasks get a one-element list. The top-level
+        # `content` is still the LAST turn's content — that's what most
+        # checks care about and matches the single-turn contract.
+        turn_contents = result_box.get("turn_contents") or ([content] if content else [])
         stats = result_box.get("stats", {}) or {}
         ctx_used = result_box.get("ctx_used", 0)
         error = result_box.get("error")
@@ -254,6 +280,7 @@ def _run_one(task: dict, cli_provider: str | None, cli_model: str | None) -> Tas
 
         bundle = {
             "content": content,
+            "turn_contents": turn_contents,
             "trace": trace,
             "stats": stats,
             "ctx_used": ctx_used,

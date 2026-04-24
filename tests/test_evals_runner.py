@@ -397,6 +397,76 @@ def test_run_suite_fails_on_timeout_if_checks_fail(monkeypatch, tmp_path):
         set_active_provider(original)
 
 
+def test_run_one_supports_multi_turn(monkeypatch, tmp_path, install_provider):  # noqa: F811
+    """Multi-turn tasks: two user inputs are delivered in order, history
+    threads between them, and the bundle exposes each turn's content."""
+    install_provider([
+        ScriptedTurn(content_chunks=["first answer"]),
+        ScriptedTurn(content_chunks=["second answer"]),
+    ])
+
+    captured: dict = {}
+
+    def capturing_check(bundle):
+        # One task = one checks pass, so this runs once with the final bundle.
+        captured["content"] = bundle["content"]
+        captured["turn_contents"] = list(bundle["turn_contents"])
+        return True, ""
+
+    fake_task = {
+        "id": "mt_unit",
+        "turns": ["turn one prompt", "turn two prompt"],
+        "setup": {"fs": None},
+        "provider": None,
+        "plan_mode": False,
+        "permission": "allow_all",
+        "limits": {"max_tool_calls": 4, "wall_timeout_s": 5},
+        "checks": [capturing_check],
+    }
+    monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+    monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+    results = runner.run_suite()
+    r = results[0]
+    assert r.passed
+    # Top-level content is the LAST turn's reply — keeps the single-turn
+    # contract for checks that use content_substr / content_regex.
+    assert r.content == "second answer"
+    assert captured["content"] == "second answer"
+    # turn_contents is the full per-turn list, in order.
+    assert captured["turn_contents"] == ["first answer", "second answer"]
+
+
+def test_run_one_single_turn_exposes_one_element_turn_contents(
+    monkeypatch, tmp_path, install_provider,  # noqa: F811
+):
+    """Single-turn tasks still work and `turn_contents` is a one-element
+    list — the multi-turn change is strictly additive."""
+    install_provider([ScriptedTurn(content_chunks=["only answer"])])
+
+    captured: dict = {}
+
+    def capturing_check(bundle):
+        captured["turn_contents"] = list(bundle["turn_contents"])
+        return True, ""
+
+    fake_task = {
+        "id": "single_unit",
+        "prompt": "hi",
+        "setup": {"fs": None},
+        "provider": None,
+        "plan_mode": False,
+        "permission": "allow_all",
+        "limits": {"max_tool_calls": 4, "wall_timeout_s": 5},
+        "checks": [capturing_check],
+    }
+    monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+    monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+    runner.run_suite()
+    assert captured["turn_contents"] == ["only answer"]
+
+
 def test_run_suite_continues_when_worker_finishes_within_grace(monkeypatch, tmp_path):
     """A task can time out at wall_timeout_s but finish cleanly during
     the grace window — the suite should continue to the next task in
@@ -568,6 +638,8 @@ def test_list_tasks_returns_all_known_ids():
     # Phase 2 — capability gaps added later.
     assert {"edit_rename_symbol", "scoped_bugfix", "pagination_read",
             "plan_mode_plan_only", "glob_resolve_bare_name"} <= ids
+    # Phase 3 — multi-turn + subagent usage.
+    assert {"multi_turn_fix", "subagent_delegation"} <= ids
     # Legacy names that were removed.
     assert "find_string" not in ids
     assert "edit_rename" not in ids
@@ -579,15 +651,32 @@ def test_every_discovered_task_has_valid_shape(tmp_path):
     dicts or callables, `limits` are positive ints. Catches typos
     (e.g. `"setup": {"fx": ...}`) that would otherwise silently skip
     the fixture copy at runtime."""
-    required = {"id", "prompt", "setup", "provider", "plan_mode",
-                "permission", "limits", "checks"}
+    # Exactly one of `prompt` or `turns` must carry the user input.
+    required_core = {"id", "setup", "provider", "plan_mode",
+                     "permission", "limits", "checks"}
     fixtures_root = Path(runner.FIXTURES_ROOT)
     for task in runner.discover_tasks():
-        missing = required - task.keys()
+        missing = required_core - task.keys()
         assert not missing, f"task {task.get('id')!r} missing keys: {missing}"
 
         assert isinstance(task["id"], str) and task["id"]
-        assert isinstance(task["prompt"], str) and task["prompt"]
+        has_prompt = "prompt" in task
+        has_turns = "turns" in task
+        assert has_prompt ^ has_turns, (
+            f"task {task['id']!r} must specify exactly one of "
+            "`prompt` (single-turn) or `turns` (multi-turn)"
+        )
+        if has_prompt:
+            assert isinstance(task["prompt"], str) and task["prompt"]
+        else:
+            turns = task["turns"]
+            assert isinstance(turns, list) and turns, (
+                f"task {task['id']!r} `turns` must be a non-empty list"
+            )
+            for i, t in enumerate(turns):
+                assert isinstance(t, str) and t, (
+                    f"task {task['id']!r} turn {i} is empty or not a string"
+                )
         assert isinstance(task["plan_mode"], bool)
 
         fs_fixture = (task.get("setup") or {}).get("fs")
