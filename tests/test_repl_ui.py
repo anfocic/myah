@@ -18,8 +18,8 @@ from repl import ui
 from repl.state import new_state
 from repl.ui import (
     SlashCompleter,
-    build_bottom_toolbar,
     build_prompt,
+    build_rprompt,
     build_turn_footer,
     build_turn_header,
 )
@@ -80,43 +80,40 @@ def test_build_prompt_omits_badges_when_clean():
     assert "debug" not in rendered
 
 
-def test_build_bottom_toolbar_shows_branch_model_ctx_and_pct(monkeypatch):
-    monkeypatch.setattr(ui, "_current_branch", lambda: "feat/toolbar-pass")
+def test_build_rprompt_order_is_branch_pct_model(monkeypatch):
+    """Layout contract: `branch · ctx% · provider:model`, left-to-right."""
+    monkeypatch.setattr(ui, "_current_branch", lambda: "feat/rprompt-pass")
     state = new_state()
     state["ctx_used"] = 1024
-    rendered = _rendered(build_bottom_toolbar(state))
-    # Branch first, then provider:model, then counts and percent.
-    assert "feat/toolbar-pass" in rendered
-    assert "ollama:qwen2.5:7b-instruct" in rendered
-    assert "1,024/4,096" in rendered
-    assert "ctx" in rendered
-    assert "25%" in rendered
+    rendered = _rendered(build_rprompt(state))
+    assert rendered == "feat/rprompt-pass · 25% · ollama:qwen2.5:7b-instruct"
 
 
-def test_build_bottom_toolbar_keeps_org_prefix_on_slashed_models(monkeypatch):
+def test_build_rprompt_keeps_full_model_name_with_org(monkeypatch):
+    """Unlike the short model label, the rprompt shows `provider:model`
+    verbatim — including any `org/` prefix like `google/gemma-4-e4b` —
+    so the user can tell at a glance which build is loaded."""
     monkeypatch.setattr(
         ui,
         "get_active_provider",
         lambda: SimpleNamespace(name="openai-compat", model="google/gemma-4-e4b"),
     )
     state = new_state()
-    rendered = _rendered(build_bottom_toolbar(state))
-    # Full model path stays in the toolbar — users need to know which
-    # specific build is loaded, and the toolbar has the room.
+    rendered = _rendered(build_rprompt(state))
     assert "openai-compat:google/gemma-4-e4b" in rendered
 
 
-def test_build_bottom_toolbar_omits_branch_segment_when_not_in_repo():
+def test_build_rprompt_omits_branch_segment_when_not_in_repo():
     state = new_state()
-    rendered = _rendered(build_bottom_toolbar(state))
-    # No branch segment, so model leads.
-    assert rendered.startswith("ollama:qwen2.5:7b-instruct")
-    assert "0%" in rendered
+    rendered = _rendered(build_rprompt(state))
+    # No branch segment → pct leads, one ` · ` separator before the model.
+    assert rendered == "0% · ollama:qwen2.5:7b-instruct"
 
 
-def test_build_bottom_toolbar_pct_style_shifts_with_ctx():
-    """Smoke test for the threshold-based pct style: comfortable fill and
-    near-full fill should render with different styles."""
+def test_build_rprompt_gradient_shifts_with_ctx():
+    """Smoke test for the HSL gradient on the pct segment: a 2%-fill
+    prompt and a 93%-fill prompt must render with different foreground
+    colors so the user can perceive pressure without reading the number."""
     state_low = new_state()
     state_low["ctx_used"] = 100  # ~2%
     state_high = new_state()
@@ -125,8 +122,8 @@ def test_build_bottom_toolbar_pct_style_shifts_with_ctx():
     def style_of_pct(segments):
         return next(style for style, text in segments if text.endswith("%"))
 
-    low = style_of_pct(build_bottom_toolbar(state_low))
-    high = style_of_pct(build_bottom_toolbar(state_high))
+    low = style_of_pct(build_rprompt(state_low))
+    high = style_of_pct(build_rprompt(state_high))
     assert low != high
     assert low.startswith("fg:#")
     assert high.startswith("fg:#")
