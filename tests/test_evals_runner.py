@@ -629,6 +629,91 @@ def test_run_suite_marks_provider_error_as_error(monkeypatch, tmp_path):
         set_active_provider(original)
 
 
+def test_run_matrix_runs_suite_per_model(monkeypatch, tmp_path):
+    """Matrix mode: loop the suite once per (provider, model) pair and key
+    the combined results by that tuple. build_provider is monkeypatched
+    per model so each 'model' returns its own scripted reply — proves
+    the runner actually swapped providers between rounds, not just re-ran
+    on whatever was already active."""
+    scripts = {
+        "fake-a-v1": [ScriptedTurn(content_chunks=["reply A"])],
+        "fake-b-v1": [ScriptedTurn(content_chunks=["reply B"])],
+    }
+    constructed: list[str] = []
+
+    def fake_build_provider(name, model):
+        constructed.append(f"{name}:{model}")
+        return FakeProvider(scripts[model])
+
+    monkeypatch.setattr(runner, "build_provider", fake_build_provider)
+
+    fake_task = {
+        "id": "matrix_t", "prompt": "x", "setup": {"fs": None},
+        "provider": None, "plan_mode": False, "permission": "allow_all",
+        "limits": {"max_tool_calls": 4, "wall_timeout_s": 5},
+        "checks": [lambda bundle: (True, "")],
+    }
+    monkeypatch.setattr(runner, "discover_tasks", lambda: [fake_task])
+    monkeypatch.setattr(runner, "RESULTS_ROOT", tmp_path)
+
+    matrix = runner.run_matrix(
+        models=[("openai-compat", "fake-a-v1"), ("openai-compat", "fake-b-v1")],
+    )
+
+    # Keys preserved in insertion order.
+    assert list(matrix.keys()) == [
+        ("openai-compat", "fake-a-v1"),
+        ("openai-compat", "fake-b-v1"),
+    ]
+    # Each model's results show its scripted reply — confirming the
+    # provider swap actually happened between rounds.
+    assert matrix[("openai-compat", "fake-a-v1")][0].content == "reply A"
+    assert matrix[("openai-compat", "fake-b-v1")][0].content == "reply B"
+    # build_provider was called exactly once per (name, model) combo.
+    assert constructed == ["openai-compat:fake-a-v1", "openai-compat:fake-b-v1"]
+
+
+def test_cmd_eval_parses_m_flags_and_routes_to_matrix(monkeypatch, tmp_path):
+    """`/eval -m p1:m1 -m p2:m2 task1` routes to run_matrix with the parsed
+    models + task subset. Bare `/eval` or `/eval task1` (no `-m`) keeps
+    calling run_suite, preserving single-model behavior."""
+    from repl import commands as cmd_mod
+    from repl.state import new_state
+
+    called_matrix: dict = {}
+    called_suite: dict = {}
+
+    def fake_matrix(**kw):
+        called_matrix.update(kw)
+        return {}
+
+    def fake_suite(**kw):
+        called_suite.update(kw)
+        return []
+
+    # cmd_eval reloads evals.runner unless PYTEST_CURRENT_TEST is set;
+    # pytest sets this env automatically so the reload path is skipped.
+    monkeypatch.setattr(runner, "run_matrix", fake_matrix)
+    monkeypatch.setattr(runner, "run_suite", fake_suite)
+    monkeypatch.setattr(runner, "list_tasks", lambda: ["t1", "t2"])
+
+    state = new_state()
+    cmd_mod.cmd_eval(state, "-m openai-compat:gemma-4 -m ollama:qwen2.5:7b-instruct t1")
+
+    assert called_suite == {}
+    assert called_matrix["models"] == [
+        ("openai-compat", "gemma-4"),
+        ("ollama", "qwen2.5:7b-instruct"),
+    ]
+    assert called_matrix["task_ids"] == ["t1"]
+
+    # A bare call with no -m goes through run_suite.
+    called_matrix.clear()
+    cmd_mod.cmd_eval(state, "t1 t2")
+    assert called_matrix == {}
+    assert called_suite["task_ids"] == ["t1", "t2"]
+
+
 def test_list_tasks_returns_all_known_ids():
     """Every task module must be discoverable; legacy ids must be gone."""
     ids = set(runner.list_tasks())
