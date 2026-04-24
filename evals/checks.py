@@ -20,6 +20,7 @@ Python logic without registering a new type.
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,61 @@ def _fs_file_contains(check: dict, bundle: dict) -> tuple[bool, str]:
     return (found, "" if found else f"pattern not found in {target}: {check['pattern']!r}")
 
 
+def _bash_exit_zero(check: dict, bundle: dict) -> tuple[bool, str]:
+    # Executable ground truth. Run a shell command in the task's cwd
+    # (or a subdir) and pass iff exit == 0. Use for pytest, py_compile,
+    # ruff — anything that already exits nonzero on failure.
+    cmd = check["cmd"]
+    cwd = Path(bundle["cwd"])
+    cwd_rel = check.get("cwd_rel")
+    if cwd_rel:
+        cwd = cwd / cwd_rel
+    timeout_s = check.get("timeout_s", 30)
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"cmd timed out after {timeout_s}s: {cmd!r}"
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+    return False, f"exit {proc.returncode}: {cmd!r} | {' | '.join(tail)}"
+
+
+def _fs_grep_count(check: dict, bundle: dict) -> tuple[bool, str]:
+    # Count regex matches in a file, compare against `expected` using op.
+    # Stronger than fs_file_contains when "zero old references left" or
+    # "new symbol used in N places" is the actual contract.
+    target = _resolve_path(check, bundle)
+    if not target.exists():
+        return False, f"file not found: {target}"
+    text = target.read_text(errors="replace")
+    flags = re.MULTILINE | (re.IGNORECASE if check.get("ignorecase") else 0)
+    count = len(re.findall(check["pattern"], text, flags))
+    expected = check["expected"]
+    op = check.get("op", "eq")
+    if op not in ("eq", "ge", "le"):
+        return False, f"fs_grep_count: unknown op {op!r} (use eq/ge/le)"
+    ok = (
+        (op == "eq" and count == expected)
+        or (op == "ge" and count >= expected)
+        or (op == "le" and count <= expected)
+    )
+    if ok:
+        return True, ""
+    return (
+        False,
+        f"grep count mismatch in {target}: {check['pattern']!r} found {count}, "
+        f"expected {op} {expected}",
+    )
+
+
 def _python(check: dict, bundle: dict) -> tuple[bool, str]:
     # Escape hatch: task supplies a `fn` callable that returns bool or
     # (bool, why). Keeps bespoke logic inline with the task instead of
@@ -120,6 +176,8 @@ CHECKS: dict[str, Callable[[dict, dict], tuple[bool, str]]] = {
     "content_substr": _content_substr,
     "fs_file_equals": _fs_file_equals,
     "fs_file_contains": _fs_file_contains,
+    "fs_grep_count": _fs_grep_count,
+    "bash_exit_zero": _bash_exit_zero,
     "python": _python,
 }
 

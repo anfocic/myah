@@ -1,0 +1,50 @@
+diff --git a/auth/session.py b/auth/session.py
+index abc1234..def5678 100644
+--- a/auth/session.py
++++ b/auth/session.py
+@@ -1,6 +1,6 @@
+ import secrets
+-from datetime import datetime, timedelta
++from datetime import datetime, timedelta, timezone
+
+
+ class Session:
+@@ -12,15 +12,21 @@ class Session:
+
+ def create_session(user_id: str) -> Session:
+     token = secrets.token_urlsafe(32)
+-    expires_at = datetime.utcnow() + timedelta(hours=24)
+-    session = Session(user_id=user_id, token=token, expires_at=expires_at)
++    now = datetime.now(timezone.utc)
++    expires_at = now + timedelta(hours=24)
++    session = Session(
++        user_id=user_id, token=token, expires_at=expires_at, created_at=now
++    )
+     db.save(session)
+     return session
+
+
+ def validate(token: str) -> User | None:
+     session = db.get_session_by_token(token)
+     if session is None:
+         return None
++    if session.expires_at < datetime.now(timezone.utc):
++        db.delete_session(session.id)
++        return None
+     return db.get_user(session.user_id)
+diff --git a/auth/tests/test_session.py b/auth/tests/test_session.py
+index 111aaaa..222bbbb 100644
+--- a/auth/tests/test_session.py
++++ b/auth/tests/test_session.py
+@@ -28,3 +28,17 @@ def test_validate_unknown_token_returns_none():
+     assert validate("nope") is None
++
++
++def test_validate_expired_session_returns_none_and_clears():
++    # Expired sessions must be deleted and rejected so stale tokens cannot
++    # be replayed after the 24h window closes.
++    session = create_session("u1")
++    session.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
++    db.save(session)
++    assert validate(session.token) is None
++    assert db.get_session_by_token(session.token) is None

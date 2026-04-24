@@ -97,6 +97,74 @@ def test_fs_file_equals_literal(tmp_path: Path):
     )[0]
 
 
+def test_fs_grep_count_eq_ge_le(tmp_path: Path):
+    f = tmp_path / "src.py"
+    f.write_text("foo\nfoo bar\nbaz\nfoo\n")
+    b = _bundle(cwd=tmp_path)
+    # eq is the default op
+    assert checks_mod.dispatch(
+        {"type": "fs_grep_count", "path": "src.py", "pattern": r"foo", "expected": 3}, b
+    )[0]
+    ok, why = checks_mod.dispatch(
+        {"type": "fs_grep_count", "path": "src.py", "pattern": r"foo", "expected": 2}, b
+    )
+    assert not ok and "found 3" in why
+    # ge passes when count >= expected
+    assert checks_mod.dispatch(
+        {"type": "fs_grep_count", "path": "src.py", "pattern": r"foo",
+         "expected": 2, "op": "ge"}, b
+    )[0]
+    # le passes when count <= expected
+    assert checks_mod.dispatch(
+        {"type": "fs_grep_count", "path": "src.py", "pattern": r"foo",
+         "expected": 5, "op": "le"}, b
+    )[0]
+    # missing file is a fail, not a raise
+    assert not checks_mod.dispatch(
+        {"type": "fs_grep_count", "path": "absent.py", "pattern": r"x", "expected": 0}, b
+    )[0]
+
+
+def test_bash_exit_zero_pass_and_fail(tmp_path: Path):
+    b = _bundle(cwd=tmp_path)
+    # Exit 0
+    assert checks_mod.dispatch(
+        {"type": "bash_exit_zero", "cmd": "true"}, b
+    )[0]
+    # Exit nonzero — why should surface exit code and command
+    ok, why = checks_mod.dispatch(
+        {"type": "bash_exit_zero", "cmd": "false"}, b
+    )
+    assert not ok and "exit 1" in why
+
+
+def test_bash_exit_zero_respects_cwd(tmp_path: Path):
+    # Writes a sentinel into the task's cwd, then a second check reads it.
+    # Proves the `cmd` runs with cwd=bundle["cwd"].
+    b = _bundle(cwd=tmp_path)
+    assert checks_mod.dispatch(
+        {"type": "bash_exit_zero", "cmd": "echo hi > marker.txt"}, b
+    )[0]
+    assert (tmp_path / "marker.txt").exists()
+
+
+def test_bash_exit_zero_cwd_rel(tmp_path: Path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    b = _bundle(cwd=tmp_path)
+    assert checks_mod.dispatch(
+        {"type": "bash_exit_zero", "cmd": "pwd | grep -q sub", "cwd_rel": "sub"}, b
+    )[0]
+
+
+def test_bash_exit_zero_timeout(tmp_path: Path):
+    b = _bundle(cwd=tmp_path)
+    ok, why = checks_mod.dispatch(
+        {"type": "bash_exit_zero", "cmd": "sleep 2", "timeout_s": 1}, b
+    )
+    assert not ok and "timed out" in why
+
+
 def test_python_callable_and_dict_form():
     b = _bundle(content="42")
     ok, _ = checks_mod.dispatch(lambda bundle: bundle["content"] == "42", b)
@@ -181,8 +249,12 @@ def test_run_suite_fails_when_forbidden_tool_is_called(monkeypatch, tmp_path, in
     assert "bash" in results[0].check_results[0]["why"]
 
 
-def test_list_tasks_returns_seed_ids():
-    """The two seed tasks should show up via discover_tasks."""
+def test_list_tasks_returns_phase1_ids():
+    """Phase 1 tasks must all be discoverable, legacy ids must be gone."""
     ids = runner.list_tasks()
-    assert "find_string" in ids
-    assert "edit_rename" in ids
+    assert "find_symbol_all" in ids
+    assert "fix_failing_test" in ids
+    assert "tdd_new_fn" in ids
+    assert "commit_msg_from_diff" in ids
+    assert "find_string" not in ids
+    assert "edit_rename" not in ids
