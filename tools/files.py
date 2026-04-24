@@ -1,5 +1,6 @@
 # tools/files.py
 import os
+import tempfile
 
 from security import is_within_cwd, refuse_outside_cwd
 
@@ -7,7 +8,7 @@ DEFAULT_READ_LINES = 1000
 MAX_LINE_CHARS = 500
 
 
-def read_file(path: str, offset: int = 1, limit: int | None = None):
+def read_file(path: str, offset: int = 1, limit: int | None = None) -> str:
     """Read a file and return it with line numbers prepended (cat -n style).
 
     offset: 1-indexed line to start from. Default 1 (top of file).
@@ -58,7 +59,7 @@ def read_file(path: str, offset: int = 1, limit: int | None = None):
     return out
 
 
-def write_file(path: str, content: str):
+def write_file(path: str, content: str) -> str:
     if not is_within_cwd(path):
         return refuse_outside_cwd(path)
     try:
@@ -69,7 +70,7 @@ def write_file(path: str, content: str):
         return f"Error writing file: {str(e)}"
 
 
-def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False):
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Surgical string replacement. Refuses ambiguous edits unless replace_all=True.
 
     Mirrors the Claude Code `Edit` tool: the model must produce an `old_string`
@@ -102,14 +103,31 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
     )
 
     # Atomic write: if we're killed mid-write, the original file stays intact.
-    tmp_path = expanded + ".tmp"
+    # Use `tempfile.NamedTemporaryFile` in the same directory so `os.replace`
+    # is guaranteed to be atomic (cross-fs renames are not), and so we get
+    # a collision-free temp name — the older `expanded + ".tmp"` scheme
+    # would silently clobber an unrelated `foo.py.tmp` left by a prior
+    # interrupted edit (or a user's own backup convention).
+    parent = os.path.dirname(expanded) or "."
+    tmp_path: str | None = None
     try:
-        with open(tmp_path, "w") as f:
-            f.write(new_content)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=parent,
+            prefix=".edit_file.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(new_content)
         os.replace(tmp_path, expanded)
+        tmp_path = None  # successfully renamed, nothing to clean up
     except Exception as e:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return f"Error writing file: {str(e)}"
 
     replaced = count if replace_all else 1
