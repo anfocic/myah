@@ -186,6 +186,7 @@ Mia supports multiple providers by normalizing them into a shared protocol:
 - `StreamChunk`
 - `ToolCall`
 - `Usage`
+- `ensure_exclusive()` — optional; evicts every other model resident on the same backend so two large local models never sit in VRAM at once. Implemented for Ollama (daemon-side `ps` + `keep_alive=0` generate) and for LM Studio (the `lms` CLI). Hosted providers don't need it. `set_active_provider` calls it on every swap, including the lazy-init one at startup. The openai-compat adapter detects LM Studio by its default `:1234` on localhost; override with `MIA_OPENAI_COMPAT_IS_LM_STUDIO=1` for a remote LM Studio install.
 
 Provider adapters translate their own wire formats into this common shape.
 

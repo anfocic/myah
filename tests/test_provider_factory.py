@@ -88,3 +88,85 @@ def test_build_unknown_provider_lists_supported_ones():
     needing to grep the source."""
     with pytest.raises(ValueError, match="ollama.*anthropic|anthropic.*ollama"):
         build_provider("bogus", "anything")
+
+
+def test_set_active_provider_calls_ensure_exclusive():
+    """The harness enforces a one-model-resident invariant on each provider
+    swap: two large local models loaded at once will OOM a typical GPU. The
+    contract is that `set_active_provider` asks the new provider to evict
+    everything else on its backend via `ensure_exclusive`."""
+    from providers import get_active_provider, set_active_provider
+
+    calls = []
+
+    class ExclusiveProvider:
+        name = "fake-exclusive"
+        model = "fake-exclusive-v1"
+
+        def ensure_exclusive(self):
+            calls.append("ensure_exclusive")
+
+        def stream_chat(self, messages, tools, num_ctx):
+            yield from ()
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    try:
+        set_active_provider(ExclusiveProvider())
+        assert calls == ["ensure_exclusive"]
+    finally:
+        set_active_provider(original)
+
+
+def test_set_active_provider_swallows_ensure_exclusive_errors():
+    """Eviction failures must not crash the REPL — the worst case is that
+    the user stays in the pre-swap state with both models resident, exactly
+    where they were before the call. A raised exception here would break
+    /model and startup for a best-effort-cleanup reason."""
+    from providers import get_active_provider, set_active_provider
+
+    class BadProvider:
+        name = "fake-bad"
+        model = "fake-bad-v1"
+
+        def ensure_exclusive(self):
+            raise RuntimeError("simulated backend hiccup")
+
+        def stream_chat(self, messages, tools, num_ctx):
+            yield from ()
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    try:
+        # Must not raise.
+        set_active_provider(BadProvider())
+    finally:
+        set_active_provider(original)
+
+
+def test_openai_compat_ensure_exclusive_noop_for_non_lm_studio(monkeypatch):
+    """Generic OpenAI-compat endpoints (vLLM, llama.cpp, OpenRouter, first-
+    party OpenAI) have no portable unload API, so the eviction hook must
+    silently do nothing for them. Only LM Studio (port 1234 on localhost by
+    convention, or explicit opt-in via env) gets the `lms unload` treatment."""
+    invocations = []
+
+    def fake_run(*args, **kwargs):
+        invocations.append(args)
+        raise AssertionError("subprocess.run should not be invoked for non-LM-Studio base URLs")
+
+    monkeypatch.setattr("providers.openai_compat.subprocess.run", fake_run)
+
+    p = OpenAICompatProvider(model="gpt-4.1-mini", base_url="https://api.openai.com/v1")
+    p.ensure_exclusive()  # must not raise or call subprocess
+    assert invocations == []
