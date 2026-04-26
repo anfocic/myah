@@ -19,15 +19,15 @@ entries are grouped by merged PR date, not SemVer releases.
 - **Anthropic provider — native adapter** (`providers/anthropic_adapter.py`).
   Messages API with event-tagged SSE parsing, typed content blocks for
   tool calls, system-prompt lifting, parallel tool-result coalescing,
-  and input-JSON delta buffering. `MIA_PROVIDER=anthropic` works out of
+  and input-JSON delta buffering. `MYAH_PROVIDER=anthropic` works out of
   the box with `ANTHROPIC_API_KEY`; `/model anthropic:claude-sonnet-4-6`
   swaps at runtime. CONCEPTS §44 covers the four wire-format divergences
   from OpenAI.
 - **OpenAI first-party provider** as a factory preset over the existing
-  `OpenAICompatProvider`. `MIA_PROVIDER=openai` + `OPENAI_API_KEY` +
+  `OpenAICompatProvider`. `MYAH_PROVIDER=openai` + `OPENAI_API_KEY` +
   optional `OPENAI_MODEL` (default `gpt-4.1-mini`).
 - **DeepSeek provider** as a factory preset over the existing
-  `OpenAICompatProvider`. `MIA_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` +
+  `OpenAICompatProvider`. `MYAH_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` +
   optional `DEEPSEEK_MODEL` (default `deepseek-chat`).
 - `SUPPORTED_PROVIDERS` constant exported from `providers` so the
   `/model` parser and tests agree on the canonical set.

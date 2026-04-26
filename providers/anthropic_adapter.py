@@ -17,7 +17,7 @@ Why a first-party adapter (vs. routing through openai-compat):
 - **Tool schema shape** is `{name, description, input_schema}`, not
   `{type, function: {...}}`. We translate on the way out.
 
-`AnthropicProvider` translates between Mia's Ollama-shaped internal
+`AnthropicProvider` translates between Myah's Ollama-shaped internal
 format and the Anthropic wire format, and normalizes streaming events
 down to the same `StreamChunk` every other adapter yields. Everything
 above `providers/` stays Anthropic-agnostic.
@@ -293,7 +293,7 @@ def _translate_tools(tools: list[dict]) -> list[dict]:
 def _translate_messages(
     messages: list[dict],
 ) -> tuple[str | None, list[dict]]:
-    """Translate Mia's internal (Ollama-shaped) message list to Anthropic's.
+    """Translate Myah's internal (Ollama-shaped) message list to Anthropic's.
 
     Internal shape (produced by agent/loop.py):
         {"role": "system", "content": "..."}

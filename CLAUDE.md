@@ -155,7 +155,7 @@ python main.py --resume
 Start on a hosted provider instead of Ollama:
 
 ```bash
-MIA_PROVIDER=openai OPENAI_API_KEY=... python main.py
+MYAH_PROVIDER=openai OPENAI_API_KEY=... python main.py
 ```
 
 ## Debugging

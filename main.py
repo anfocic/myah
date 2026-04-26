@@ -1,5 +1,5 @@
 # main.py
-"""Mia's REPL entry point.
+"""Myah's REPL entry point.
 
 Thin by design: everything except the per-turn loop itself lives in sibling
 modules (see `repl/` and `display.py`). This file's job is to wire them
@@ -29,7 +29,7 @@ from repl.ui import build_prompt, build_session
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="mia", description="Mia — a hand-rolled agent harness.")
+    p = argparse.ArgumentParser(prog="myah", description="Myah — a hand-rolled agent harness.")
     p.add_argument(
         "--resume",
         action="store_true",
@@ -43,7 +43,7 @@ def main() -> None:
     state: State = new_state()
     session = build_session(SLASH_COMMANDS, state)
     console.print(
-        "[bold]Mia ready.[/bold] "
+        "[bold]Myah ready.[/bold] "
         "Type [italic dim]/help[/italic dim] for commands, "
         "[italic dim]exit[/italic dim] to quit.\n"
     )

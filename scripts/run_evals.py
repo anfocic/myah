@@ -18,7 +18,7 @@ from evals.runner import list_tasks, run_suite
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Mia's eval suite.")
+    parser = argparse.ArgumentParser(description="Run Myah's eval suite.")
     parser.add_argument(
         "--task",
         action="append",

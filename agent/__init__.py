@@ -1,4 +1,4 @@
-"""Mia's agent loop layer.
+"""Myah's agent loop layer.
 
 Each module owns one concern:
 

@@ -5,9 +5,9 @@ from env import load_dotenv
 load_dotenv()
 
 # Which backend the provider layer talks to. Override via env:
-#     MIA_PROVIDER=anthropic python main.py
+#     MYAH_PROVIDER=anthropic python main.py
 # Supported: ollama | openai-compat | openai | anthropic | deepseek
-MODEL_PROVIDER = os.environ.get("MIA_PROVIDER", "openai-compat")
+MODEL_PROVIDER = os.environ.get("MYAH_PROVIDER", "openai-compat")
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 OLLAMA_MODEL = "qwen/qwen3.5-9b"
@@ -23,10 +23,10 @@ OPENAI_COMPAT_BASE_URL = os.environ.get("OPENAI_COMPAT_BASE_URL", "http://127.0.
 # These read their own <NAME>_MODEL / <NAME>_API_KEY / <NAME>_BASE_URL env
 # vars directly in providers/__init__.py; config.py holds no defaults so we
 # don't duplicate the provider presets. Set the relevant env vars and flip
-# MIA_PROVIDER to pick one up:
-#     MIA_PROVIDER=openai    OPENAI_API_KEY=...    OPENAI_MODEL=gpt-4.1-mini
-#     MIA_PROVIDER=anthropic ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=claude-sonnet-4-6
-#     MIA_PROVIDER=deepseek  DEEPSEEK_API_KEY=...  DEEPSEEK_MODEL=deepseek-chat
+# MYAH_PROVIDER to pick one up:
+#     MYAH_PROVIDER=openai    OPENAI_API_KEY=...    OPENAI_MODEL=gpt-4.1-mini
+#     MYAH_PROVIDER=anthropic ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=claude-sonnet-4-6
+#     MYAH_PROVIDER=deepseek  DEEPSEEK_API_KEY=...  DEEPSEEK_MODEL=deepseek-chat
 
 # Active model name, derived from provider. Both /context and harness_info
 # already read this, so the slash/tool surfaces stay provider-agnostic.
@@ -67,14 +67,14 @@ TOOL_RESULT_MAX_BYTES = 10_000
 # servers default this low (512–2048) and silently cut responses mid-sentence;
 # explicitly setting it lets the harness own the ceiling. Providers that don't
 # take max_tokens (Ollama) ignore it.
-MAX_COMPLETION_TOKENS = int(os.environ.get("MIA_MAX_COMPLETION_TOKENS", "4096"))
+MAX_COMPLETION_TOKENS = int(os.environ.get("MYAH_MAX_COMPLETION_TOKENS", "4096"))
 
 # Hard ceiling on the number of provider iterations a single `run_agent`
 # call may perform before the loop gives up. A small model that gets stuck
 # in a tool-call-tool-call loop would otherwise run until the user hits
 # Ctrl-C or the context window explodes. On hit, run_agent returns a
 # synthetic assistant message explaining the halt.
-MAX_AGENT_ITERATIONS = int(os.environ.get("MIA_MAX_ITERS", "50"))
+MAX_AGENT_ITERATIONS = int(os.environ.get("MYAH_MAX_ITERS", "50"))
 
 # Window size for the spinning-call guard: if the model emits the same
 # (tool_name, args) tuple this many *consecutive* times, the loop halts

@@ -48,7 +48,7 @@ def test_multiple_system_messages_are_concatenated():
 
 
 def test_assistant_tool_call_becomes_typed_content_blocks():
-    """Mia's internal shape: {role: assistant, content: "", tool_calls: [...]}
+    """Myah's internal shape: {role: assistant, content: "", tool_calls: [...]}
     Anthropic shape: {role: assistant, content: [{type: text...},
                                                   {type: tool_use, ...}]}"""
     _system, out = _translate_messages([

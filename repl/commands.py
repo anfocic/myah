@@ -299,7 +299,7 @@ def cmd_eval(state: State, arg: str = "") -> None:
     restores it so the REPL isn't disturbed if a task pins a different one."""
     # Imported lazily so the eval deps (rich.table, task modules, fixtures)
     # only load when the user actually runs /eval. Reloading keeps the REPL
-    # dev loop honest: eval runner fixes take effect without restarting Mia.
+    # dev loop honest: eval runner fixes take effect without restarting Myah.
     import importlib
 
     from evals import runner as eval_runner

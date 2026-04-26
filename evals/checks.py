@@ -75,12 +75,12 @@ def _resolve_path(check: dict, bundle: dict) -> Path:
 
 
 def _normalize_python_cmd(cmd: str) -> str:
-    """Run eval Python checks with the interpreter running Mia.
+    """Run eval Python checks with the interpreter running Myah.
 
     The eval tasks say `python -m pytest ...` because that is the command a
     human would type. Inside a REPL launched from another environment, plain
     `python` (or `python3`) can resolve to a global interpreter with no
-    pytest installed. Normalize either prefix to Mia's own interpreter so
+    pytest installed. Normalize either prefix to Myah's own interpreter so
     checks see the same environment the harness runs under.
     """
     quoted = shlex.quote(sys.executable)

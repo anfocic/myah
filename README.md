@@ -1,4 +1,4 @@
-# Mia
+# Myah
 
 A hand-rolled agent harness, built to learn how agent harnesses work.
 

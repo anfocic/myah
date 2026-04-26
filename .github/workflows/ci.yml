@@ -45,7 +45,7 @@ jobs:
         run: mypy .
 
       - name: Tests (pytest with coverage)
-        # Coverage gate set in pyproject at fail_under=80. Mia's tests
+        # Coverage gate set in pyproject at fail_under=80. Myah's tests
         # don't require a live Ollama daemon — they use scripted state
         # and stub callables (FakeProvider in test_integration).
         run: pytest tests/ --cov --cov-report=xml --cov-report=term

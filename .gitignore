@@ -32,10 +32,5 @@ evals/results/
 .vscode/
 .idea/
 
-# Personal study notes — intentionally not committed
-STUDY.md
-concepts/
-CONCEPTS-*.md
-
 # Obsidian vault — personal knowledge base, not part of the codebase
 vault/

@@ -169,7 +169,7 @@ def test_normalize_python_cmd_quotes_current_interpreter():
     )
     # `python3` gets the same rewrite — the asymmetry between `python` and
     # `python3` only bites you when the latter resolves to a different
-    # interpreter than Mia's venv, which is exactly when it matters most.
+    # interpreter than Myah's venv, which is exactly when it matters most.
     assert checks_mod._normalize_python_cmd("python3 -m pytest") == (
         f"{quoted} -m pytest"
     )

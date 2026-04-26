@@ -1,8 +1,8 @@
 """Prompt-injection defenses: cwd scoping + injection-marker detection.
 
 The cwd guard is best-effort — it prevents the model from getting file
-contents outside cwd through Mia's own tools. It can't stop a user who
-opts out via MIA_ALLOW_OUTSIDE_CWD or shell-outs that use paths the user
+contents outside cwd through Myah's own tools. It can't stop a user who
+opts out via MYAH_ALLOW_OUTSIDE_CWD or shell-outs that use paths the user
 approves through the permission gate. The injection scan is pattern-based
 and will miss novel attacks — it's a floor, not a ceiling."""
 
@@ -66,14 +66,14 @@ def test_symlink_escape_is_refused(tmp_path, monkeypatch):
 
 def test_env_escape_hatch_disables_guard(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MIA_ALLOW_OUTSIDE_CWD", "1")
+    monkeypatch.setenv("MYAH_ALLOW_OUTSIDE_CWD", "1")
     # With the opt-out set, even /etc/passwd is "within cwd"
     assert is_within_cwd("/etc/passwd") is True
 
 
 def test_refusal_message_includes_env_var(tmp_path):
     msg = refuse_outside_cwd("/etc/passwd")
-    assert "MIA_ALLOW_OUTSIDE_CWD" in msg
+    assert "MYAH_ALLOW_OUTSIDE_CWD" in msg
     assert "/etc/passwd" in msg
 
 

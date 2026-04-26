@@ -1,4 +1,4 @@
-"""Mia's REPL layer. Each module owns one concern:
+"""Myah's REPL layer. Each module owns one concern:
 
 - `state`         — the `State` TypedDict + snapshot-stack constant
 - `console`       — the shared rich.Console singleton

@@ -209,7 +209,7 @@ class OpenAICompatProvider(Provider):
         # LM Studio defaults to port 1234 on localhost; no other server in
         # the OpenAI-compat zoo uses that port by convention. Overridable via
         # env so a remote LM Studio install can opt in explicitly.
-        if os.environ.get("MIA_OPENAI_COMPAT_IS_LM_STUDIO") == "1":
+        if os.environ.get("MYAH_OPENAI_COMPAT_IS_LM_STUDIO") == "1":
             return True
         base = self._base.lower()
         return ":1234" in base and ("localhost" in base or "127.0.0.1" in base)

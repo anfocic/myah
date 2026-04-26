@@ -128,7 +128,7 @@ def _copy_fixture(fixture_name: str) -> tuple[Path, Path]:
     src = FIXTURES_ROOT / fixture_name
     if not src.is_dir():
         raise FileNotFoundError(f"fixture not found: {src}")
-    tmp = Path(tempfile.mkdtemp(prefix=f"mia-eval-{fixture_name}-"))
+    tmp = Path(tempfile.mkdtemp(prefix=f"myah-eval-{fixture_name}-"))
     # dirs_exist_ok: copytree into a freshly created tmp dir that already
     # exists because mkdtemp made it.
     shutil.copytree(src, tmp, dirs_exist_ok=True)

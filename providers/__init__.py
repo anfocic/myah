@@ -21,7 +21,7 @@ _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 
 # Reasonable defaults for `/model <provider-name>` with no model specified
-# and for the startup path when MIA_PROVIDER selects one of these without
+# and for the startup path when MYAH_PROVIDER selects one of these without
 # a matching *_MODEL env var set.
 _DEFAULT_MODELS = {
     "openai": "gpt-4.1-mini",
