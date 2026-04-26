@@ -5,9 +5,9 @@ yielded `Completion`s. `build_prompt` is also pure: feed it a state dict,
 inspect the returned `FormattedText` tuples.
 
 Everything that needs a real terminal (history recall via arrow keys,
-Ctrl+C handling, prompt pinning under patch_stdout) lives in the manual
-smoke matrix in docs/BUILD_NOTES.md — pexpect would let us test them but
-the cost/benefit doesn't justify it for a pedagogical harness."""
+Ctrl+C handling, prompt pinning under patch_stdout) is exercised by a
+manual smoke matrix — pexpect would let us automate it but the
+cost/benefit doesn't justify it for a pedagogical harness."""
 from types import SimpleNamespace
 
 import pytest

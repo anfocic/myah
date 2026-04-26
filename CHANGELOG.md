@@ -64,8 +64,7 @@ entries are grouped by merged PR date, not SemVer releases.
   scrollback (`Thinking…`, `Running tools (2/3)`) under the pinned
   prompt. `run_agent`, `_run_tools_parallel`, and `check_permission`
   all dropped their `status=` parameter.
-- README trimmed to a one-screen landing page — the detailed tour
-  lives in `docs/CONCEPTS.md`.
+- README trimmed to a one-screen landing page.
 
 ### Fixed
 
@@ -143,5 +142,5 @@ Six bug sweep (PR #27):
   tok/s stats.
 - Slash commands: `/help`, `/clear`, `/context`, `/plan`, `/debug`,
   `/retry`.
-- Chronological `docs/CONCEPTS.md` — 37 entries at start of April,
-  40 by mid-April.
+- Chronological build notes — 37 entries at start of April, 40 by
+  mid-April.

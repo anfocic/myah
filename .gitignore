@@ -34,3 +34,8 @@ evals/results/
 
 # Obsidian vault — personal knowledge base, not part of the codebase
 vault/
+
+# Personal study notes / planning docs — shared with friends out-of-band
+docs/
+agentic_harness_borrowed_ideas.md
+agentic_harness_must_haves.md
