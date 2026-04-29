@@ -17,6 +17,26 @@ from repl.console import console
 _SALIENT_ARG_KEYS = ("path", "command", "pattern", "query")
 _EXIT_RE = re.compile(r"^exit:\s*(-?\d+)\s*$", re.MULTILINE)
 
+# Tool category → bullet color for at-a-glance scannability.
+_TOOL_COLORS = {
+    "read_file": "cyan",
+    "glob": "cyan",
+    "grep": "cyan",
+    "web_search": "cyan",
+    "get_current_time": "green",
+    "harness_info": "green",
+    "edit_file": "yellow",
+    "write_file": "yellow",
+    "bash": "red",
+    "git_checkout": "red",
+    "spawn_subagent": "magenta",
+}
+
+
+def _tool_bullet(name: str) -> str:
+    color = _TOOL_COLORS.get(name, "dim")
+    return f"[{color}]●[/{color}]"
+
 
 def _args_preview(args: dict) -> str:
     """One-line arg summary. Prefers the salient key per tool."""
@@ -147,10 +167,17 @@ def _result_summary(name: str, args: dict, result: str) -> str:
 
 def on_tool_start(name: str, args: dict, meta: dict | None = None) -> None:
     preview = _args_preview(args)
+    bullet = _tool_bullet(name)
+    progress = ""
+    if meta:
+        total = meta.get("total")
+        index = meta.get("index")
+        if total and index:
+            progress = f"[dim][{index}/{total}][/dim] "
     if preview:
-        console.print(f"[dim]●[/dim] [bold]{name}[/bold] [dim]{preview}[/dim]")
+        console.print(f"{bullet} {progress}[bold]{name}[/bold] [dim]{preview}[/dim]")
     else:
-        console.print(f"[dim]●[/dim] [bold]{name}[/bold]")
+        console.print(f"{bullet} {progress}[bold]{name}[/bold]")
 
 
 def on_tool_end(name: str, args: dict, result: str, ok: bool, meta: dict | None = None) -> None:

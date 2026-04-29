@@ -25,7 +25,7 @@ from repl.persistence import (
 )
 from repl.state import State, new_state
 from repl.tool_registry import make_execute_tool, tools
-from repl.ui import build_prompt, build_session
+from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
 
 
 def _parse_args() -> argparse.Namespace:
@@ -111,6 +111,7 @@ def main() -> None:
                     continue
 
             start = time.time()
+            console.print(build_turn_header(state))
             # Snapshot pre-turn history so /rewind can restore it. Deep copy
             # because history entries are dicts; a shallow copy could alias and
             # mutate the snapshot when the next turn rebinds. The deque drops
@@ -158,6 +159,7 @@ def main() -> None:
                     f"turn(s), summarized into context; will re-settle "
                     f"after next provider call[/dim yellow]"
                 )
+            console.print(build_turn_footer(state["ctx_used"], NUM_CTX, elapsed, stats or {}))
             console.print()
 
 
