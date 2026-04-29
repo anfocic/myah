@@ -76,6 +76,11 @@ MAX_COMPLETION_TOKENS = int(os.environ.get("MYAH_MAX_COMPLETION_TOKENS", "4096")
 # synthetic assistant message explaining the halt.
 MAX_AGENT_ITERATIONS = int(os.environ.get("MYAH_MAX_ITERS", "50"))
 
+# Completion token reserve. trim_history caps the prompt budget at
+# num_ctx - RESERVED_COMPLETION_TOKENS so the model always has headroom
+# to generate an answer. Prevents "prompt fits but response is cut off".
+RESERVED_COMPLETION_TOKENS = 1024
+
 # Window size for the spinning-call guard: if the model emits the same
 # (tool_name, args) tuple this many *consecutive* times, the loop halts
 # before executing again. Sliding-window — a legitimate re-read of the

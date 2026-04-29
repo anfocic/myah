@@ -1,12 +1,17 @@
 """Context compaction: manual /compact (compact_history) + intra-turn
 microcompact. The summarization path isn't tested here because it hits
 the provider — see test_apply_summary_shape for the shape-only check."""
+from unittest.mock import MagicMock, patch
+
 from agent import (
     COMPACT_KEEP_LAST,
     ELIDED_PREFIX,
     compact_history,
     microcompact,
+    summarize_dropped,
+    trim_history,
 )
+from providers import ProviderError
 
 
 def _turn(i: int) -> list[dict]:
@@ -69,3 +74,35 @@ def test_microcompact_noop_when_few_tool_results():
         {"role": "tool", "content": "r1"},
     ]
     assert microcompact(messages, keep_recent=3) == 0
+
+
+def test_trim_history_reserves_completion_tokens():
+    """trim_history must reduce the target by RESERVED_COMPLETION_TOKENS,
+    making it more aggressive than a raw target*num_ctx budget."""
+    history = _turn(0) + _turn(1)
+    num_ctx = 4000
+    ctx_used = 3500  # above 0.8 * 4000 = 3200, so trimming fires
+    # target_tokens = 0.5 * 4000 - 1024 = 976
+    # Mock counts so the full history exceeds 976 but one turn does not.
+    with patch("agent.context.count_tokens", side_effect=[1200, 500]) as mock_count:
+        new_history, dropped = trim_history(list(history), ctx_used, num_ctx)
+    assert mock_count.call_count == 2
+    assert len(dropped) == 2
+    assert len(new_history) == 2
+
+
+def test_summarize_dropped_extractive_fallback():
+    """When the provider LLM call fails, summarize_dropped falls back to
+    a locally-built extractive summary instead of returning empty string."""
+    dropped = [
+        {"role": "user", "content": "Read the auth module and fix the bug."},
+        {"role": "assistant", "content": "Done.", "tool_calls": [{"name": "read_file"}]},
+    ]
+    with patch("agent.context.get_active_provider") as mock_get:
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = ProviderError("down")
+        mock_get.return_value = mock_provider
+        result = summarize_dropped(dropped)
+    assert result
+    assert "auth module" in result
+    assert "read_file" in result
