@@ -10,10 +10,9 @@ session file is annoying, not fatal, and the REPL must still boot."""
 import json
 import os
 
+from config import SESSION_FILE
 from repl.console import console
 from repl.state import State
-
-SESSION_FILE = os.path.expanduser("~/.mia_session.json")
 
 
 def load_session(state: State) -> None:

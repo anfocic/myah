@@ -28,6 +28,9 @@ evals/results/
 .env
 .env.local
 
+# Myah config — local overrides only; shared config is committed
+.myah/config.local.json
+
 # Editor
 .vscode/
 .idea/
