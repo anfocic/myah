@@ -52,9 +52,21 @@ class OpenAICompatProvider(Provider):
         api_key: str = "",
         *,
         context_size: int,
+        include_reasoning_in_history: bool = False,
     ):
         self.model = model
         self.context_size = context_size
+        # When True, `reasoning_content` is preserved on outgoing assistant
+        # messages with tool_calls (and the empty-string default is emitted
+        # when missing). Required by Moonshot AI / kimi-k2.6 — its server
+        # 400s if the key is absent on a tool-call assistant message when
+        # thinking mode is enabled.
+        # When False (default), `reasoning_content` is stripped from every
+        # outgoing message. Reasoning text from a previous turn is ephemeral
+        # — replaying it back to most models (qwen3 in particular) confuses
+        # them and degrades the next reply. This was the silent default
+        # before the flag existed; we kept that behavior for kimi only.
+        self.include_reasoning_in_history = include_reasoning_in_history
         self._base = base_url.rstrip("/")
         self._headers = {"Content-Type": "application/json"}
         if api_key:
@@ -70,7 +82,9 @@ class OpenAICompatProvider(Provider):
     ) -> Iterator[StreamChunk]:
         payload: dict = {
             "model": self.model,
-            "messages": _translate_messages(messages),
+            "messages": _translate_messages(
+                messages, include_reasoning=self.include_reasoning_in_history,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": MAX_COMPLETION_TOKENS,
@@ -111,7 +125,9 @@ class OpenAICompatProvider(Provider):
         except KeyError:
             enc = tiktoken.get_encoding("cl100k_base")
 
-        translated = _translate_messages(messages)
+        translated = _translate_messages(
+            messages, include_reasoning=self.include_reasoning_in_history,
+        )
         total = 0
         for msg in translated:
             total += _PER_MESSAGE_TOKENS
@@ -136,7 +152,9 @@ class OpenAICompatProvider(Provider):
     def chat(self, messages: list[dict], num_ctx: int) -> tuple[str, Usage]:
         payload = {
             "model": self.model,
-            "messages": _translate_messages(messages),
+            "messages": _translate_messages(
+                messages, include_reasoning=self.include_reasoning_in_history,
+            ),
             "stream": False,
             "max_tokens": MAX_COMPLETION_TOKENS,
         }
@@ -306,10 +324,20 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
     )
 
 
-def _translate_messages(messages: list[dict]) -> list[dict]:
+def _translate_messages(
+    messages: list[dict], *, include_reasoning: bool = False,
+) -> list[dict]:
     """Translate from the internal (Ollama-shaped) message list to the
     OpenAI-compat shape. The only real work is synthesizing tool_call_ids
     so each assistant's tool_calls pair with the following tool messages.
+
+    `include_reasoning` controls whether `reasoning_content` survives into
+    the wire format. Default False — old reasoning text is stripped from
+    every message because replaying it back to most models (qwen3 in
+    particular) confuses them and degrades the next reply. Set True only
+    for backends that require it on every tool-call assistant message
+    (Moonshot AI / kimi-k2.6 — its server returns 400 if the key is
+    absent in thinking mode).
 
     Internal shape (produced by agent.py):
         {"role": "system", "content": "..."}
@@ -361,15 +389,15 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
                         },
                     }
                 )
-            assistant_msg = {
+            assistant_msg: dict[str, object] = {
                 "role": "assistant",
                 "content": msg.get("content") or "",
                 "tool_calls": oai_tool_calls,
-                # Moonshot AI (kimi-k2.6) requires reasoning_content on every
-                # assistant message with tool_calls when thinking is enabled.
-                # Empty string is fine; missing key triggers a 400.
-                "reasoning_content": msg.get("reasoning_content") or "",
             }
+            if include_reasoning:
+                # Empty-string default: kimi rejects (400) when the key is
+                # absent on a tool-call assistant message in thinking mode.
+                assistant_msg["reasoning_content"] = msg.get("reasoning_content") or ""
             out.append(assistant_msg)
             pending_ids = ids_for_this
         elif role == "tool":
@@ -386,12 +414,9 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
                 }
             )
         else:
-            out.append(
-                {
-                    k: v
-                    for k, v in msg.items()
-                    if k in ("role", "content", "name", "reasoning_content")
-                }
-            )
+            keys = {"role", "content", "name"}
+            if include_reasoning:
+                keys.add("reasoning_content")
+            out.append({k: v for k, v in msg.items() if k in keys})
 
     return out

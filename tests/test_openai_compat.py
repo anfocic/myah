@@ -67,6 +67,65 @@ def test_tool_message_with_no_preceding_assistant_gets_fresh_id():
     assert out[0]["tool_call_id"].startswith("call_")
 
 
+def test_translate_strips_reasoning_content_by_default():
+    """Old reasoning text is ephemeral — replaying it back to most models
+    (qwen3 in particular) confuses them. The default wire output must NOT
+    carry reasoning_content on any role.
+
+    Covers both the assistant-with-tool_calls branch (its own dedicated
+    code path) and the catch-all branch (system/user/plain assistant).
+    """
+    msgs = [
+        {"role": "system", "content": "sys", "reasoning_content": "leak1"},
+        {"role": "user", "content": "u", "reasoning_content": "leak2"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "reasoning_content": "leak3",
+            "tool_calls": [{"name": "grep", "arguments": {"x": 1}}],
+        },
+        {"role": "tool", "content": "t"},
+        {"role": "assistant", "content": "final", "reasoning_content": "leak4"},
+    ]
+    out = _translate_messages(msgs)
+    for m in out:
+        assert "reasoning_content" not in m, f"leaked on {m.get('role')}: {m}"
+
+
+def test_translate_preserves_reasoning_content_when_opted_in():
+    """Moonshot AI / kimi-k2.6 returns 400 if an assistant message with
+    tool_calls lacks reasoning_content in thinking mode. With
+    include_reasoning=True, the key must be present on that branch even
+    when the source message had no reasoning_content (empty-string
+    default), and it must round-trip when present."""
+    msgs = [
+        {
+            "role": "assistant",
+            "content": "a",
+            "tool_calls": [{"name": "grep", "arguments": {}}],
+            # no reasoning_content set — must still emit empty string
+        },
+        {"role": "tool", "content": "t"},
+        {
+            "role": "assistant",
+            "content": "b",
+            "tool_calls": [{"name": "glob", "arguments": {}}],
+            "reasoning_content": "step 1",
+        },
+        {"role": "tool", "content": "t2"},
+        {"role": "user", "content": "u", "reasoning_content": "u-reasoning"},
+    ]
+    out = _translate_messages(msgs, include_reasoning=True)
+    # First assistant: empty-string default for kimi's 400 guard.
+    asst_msgs = [m for m in out if m["role"] == "assistant"]
+    assert asst_msgs[0]["reasoning_content"] == ""
+    # Second assistant: round-tripped value.
+    assert asst_msgs[1]["reasoning_content"] == "step 1"
+    # User message: also passed through when opted in.
+    user_msg = next(m for m in out if m["role"] == "user")
+    assert user_msg.get("reasoning_content") == "u-reasoning"
+
+
 def test_sse_reasoning_content_becomes_reasoning_delta():
     """LM Studio (qwen3) and DeepSeek-R1 route chain-of-thought to a
     separate `reasoning_content` delta. Parsing it into `reasoning_delta`

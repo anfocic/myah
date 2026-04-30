@@ -141,6 +141,10 @@ def build_provider(name: str, model: str) -> Provider:
         # OpenCode exposes an OpenAI-compatible endpoint; same adapter,
         # different host + API-key env var. Split into a dedicated adapter
         # if/when OpenCode-specific features need bespoke handling.
+        # `include_reasoning_in_history=True` because OpenCode fronts
+        # Moonshot AI (kimi-k2.6) by default, and kimi's server returns
+        # 400 when an assistant message with tool_calls lacks the
+        # `reasoning_content` key in thinking mode.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
@@ -148,6 +152,7 @@ def build_provider(name: str, model: str) -> Provider:
             base_url=os.environ.get("OPENCODE_BASE_URL", _OPENCODE_BASE_URL),
             api_key=os.environ.get("OPENCODE_API_KEY", ""),
             context_size=lookup_context_size(model, default=128_000),
+            include_reasoning_in_history=True,
         )
         provider.name = "opencode"
         return provider
