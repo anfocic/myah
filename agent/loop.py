@@ -505,12 +505,14 @@ def _run_tools_parallel(
         permission_check = lambda name, args, meta=None: name in READ_ONLY_TOOLS
 
     approved: list[tuple[int, str, dict, dict]] = []
+    total = len(tool_calls)
     for i, tc in enumerate(tool_calls):
         name = tc.name
         args = tc.arguments
         meta = {
             "tool_id": f"T{i + 1:02d}",
             "index": i + 1,
+            "total": total,
         }
         _notify_start(name, args, meta)
         if plan_mode and name not in READ_ONLY_TOOLS:
