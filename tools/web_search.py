@@ -9,9 +9,8 @@ import os
 
 import httpx
 
-from tools.spec import register
-
 from env import load_dotenv
+from tools.spec import register
 
 SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_MAX_RESULTS = 5

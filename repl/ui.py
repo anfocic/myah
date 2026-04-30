@@ -20,7 +20,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
-from config import INPUT_HISTORY_FILE, NUM_CTX
+from config import INPUT_HISTORY_FILE, get_context_size
 from providers import get_active_provider
 from repl.state import State
 
@@ -146,7 +146,8 @@ def build_rprompt(state: State) -> FormattedText:
     grows wide enough to collide with it."""
     provider = get_active_provider()
     ctx_used = state.get("ctx_used", 0)
-    pct = _ctx_pct(ctx_used, NUM_CTX)
+    ctx_size = get_context_size()
+    pct = _ctx_pct(ctx_used, ctx_size)
 
     segments: list[tuple[str, str]] = []
     cwd_short = _short_cwd(state.get("cwd", os.getcwd()))
@@ -157,7 +158,7 @@ def build_rprompt(state: State) -> FormattedText:
     if branch:
         segments.append((_DIM, _short_branch(branch)))
         segments.append((_DIM, " · "))
-    segments.append((_ctx_gradient_style(ctx_used, NUM_CTX), f"{pct:.0%}"))
+    segments.append((_ctx_gradient_style(ctx_used, ctx_size), f"{pct:.0%}"))
     segments.append((_DIM, " · "))
     segments.append((_DIM, _rprompt_model(provider)))
     return FormattedText(segments)
@@ -220,7 +221,7 @@ def build_turn_header(state: State) -> str:
     parts = [
         f"[bold]Turn {turn_no}[/bold]",
         f"[dim]{provider.name}:{_clip(provider.model, _MODEL_MAX)}[/dim]",
-        f"[dim]{state['ctx_used']:,}/{NUM_CTX:,}[/dim] {ctx_tag(state['ctx_used'], NUM_CTX)}",
+        f"[dim]{state['ctx_used']:,}/{get_context_size():,}[/dim] {ctx_tag(state['ctx_used'], get_context_size())}",
     ]
     branch = _current_branch()
     if branch:

@@ -107,9 +107,13 @@ _registry = get_registry()
 
 # Build the full schema list seen by the model: generic registry first,
 # then the special cases. The order only matters for readability.
-tools: list[dict[str, Any]] = [t.schema for t in _registry.values()] + _SPECIAL_SCHEMAS
+# Named TOOL_SCHEMAS rather than `tools` to avoid shadowing the `tools`
+# package imported above for side-effect registration — the collision
+# made mypy resolve every downstream `from repl.tool_registry import
+# tools` to the package module instead of this list.
+TOOL_SCHEMAS: list[dict[str, Any]] = [t.schema for t in _registry.values()] + _SPECIAL_SCHEMAS
 
-TOOL_NAMES = [t["function"]["name"] for t in tools]
+TOOL_NAMES = [t["function"]["name"] for t in TOOL_SCHEMAS]
 
 
 def make_execute_tool(state: State, permission_check=None):

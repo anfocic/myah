@@ -89,6 +89,36 @@ else:
 
 # ── Context ──────────────────────────────────────────────────────────────────
 NUM_CTX = _context_cfg.get("num_ctx", 32768)
+
+
+def get_context_size() -> int:
+    """Return the active provider's context window size.
+
+    Falls back to NUM_CTX when no provider has been initialized yet
+    (early import, test fixtures that bypass `set_active_provider`).
+    Hosted providers report their own native window (e.g. OpenAI = 128K,
+    Anthropic = 200K); local providers use the user-configured NUM_CTX.
+
+    Narrow exception list on purpose: a real bug in the provider should
+    propagate, not silently degrade context-management decisions to the
+    NUM_CTX default."""
+    try:
+        from providers import get_active_provider
+    except ImportError:
+        # `providers` failed to import — typically the test process tearing
+        # down its sys.modules, or a broken install. Fall back rather than
+        # crash the REPL footer.
+        return NUM_CTX
+    try:
+        return get_active_provider().context_size
+    except (RuntimeError, AttributeError):
+        # RuntimeError: no provider active yet (lazy-init path before
+        # set_active_provider has run). AttributeError: a provider that
+        # somehow lacks the `context_size` attr (test stub, or an adapter
+        # added without updating the Protocol).
+        return NUM_CTX
+
+
 RESERVED_COMPLETION_TOKENS = _context_cfg.get("reserved_completion_tokens", 1024)
 TOOL_RESULT_MAX_BYTES = _context_cfg.get("tool_result_max_bytes", 10_000)
 

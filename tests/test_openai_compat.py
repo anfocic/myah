@@ -140,7 +140,9 @@ def _tool_message_ids(translated: list[dict]) -> list[str]:
 
 def _provider() -> OpenAICompatProvider:
     # base_url is never hit — count_tokens is pure tiktoken, no network.
-    return OpenAICompatProvider(model="gpt-4o-mini", base_url="http://unused")
+    return OpenAICompatProvider(
+        model="gpt-4o-mini", base_url="http://unused", context_size=128_000,
+    )
 
 
 def test_count_tokens_positive_and_monotonic():

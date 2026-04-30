@@ -4,7 +4,7 @@ from rich.console import Console
 import tools.web_search as web_search_module
 from agent import READ_ONLY_TOOLS
 from display import _parse_web_results, render_web_search_results
-from repl.tool_registry import TOOL_NAMES, make_execute_tool, tools
+from repl.tool_registry import TOOL_NAMES, TOOL_SCHEMAS, make_execute_tool
 from tools.web_search import SEARCH_API_URL, web_search
 
 
@@ -74,7 +74,7 @@ def test_web_search_formats_brave_results(monkeypatch):
 
 
 def test_registry_exposes_and_dispatches_web_search(monkeypatch, state):
-    schema = next(t for t in tools if t["function"]["name"] == "web_search")
+    schema = next(t for t in TOOL_SCHEMAS if t["function"]["name"] == "web_search")
     assert "web_search" in TOOL_NAMES
     assert "web_search" in READ_ONLY_TOOLS
     assert schema["function"]["parameters"]["required"] == ["query"]

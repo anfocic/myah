@@ -45,8 +45,16 @@ _PER_REPLY_TOKENS = 3
 class OpenAICompatProvider(Provider):
     name = "openai-compat"
 
-    def __init__(self, model: str, base_url: str, api_key: str = ""):
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        api_key: str = "",
+        *,
+        context_size: int,
+    ):
         self.model = model
+        self.context_size = context_size
         self._base = base_url.rstrip("/")
         self._headers = {"Content-Type": "application/json"}
         if api_key:

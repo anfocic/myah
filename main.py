@@ -13,7 +13,7 @@ import time
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from agent import apply_summary, run_agent, trim_history
-from config import NUM_CTX
+from config import get_context_size
 from display import on_tool_end, on_tool_start
 from permissions import check_permission
 from providers import get_active_provider
@@ -25,7 +25,7 @@ from repl.persistence import (
     save_session,
 )
 from repl.state import State, new_state
-from repl.tool_registry import make_execute_tool, tools
+from repl.tool_registry import TOOL_SCHEMAS, make_execute_tool
 from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
 
 
@@ -121,7 +121,7 @@ def main() -> None:
             dropped: list = []
             try:
                 response, state["history"], state["ctx_used"], stats = run_agent(
-                    user_input, tools, execute_tool, state["history"],
+                    user_input, TOOL_SCHEMAS, execute_tool, state["history"],
                     console=console,
                     permission_check=perm_check,
                     plan_mode=state["plan_mode"],
@@ -137,8 +137,8 @@ def main() -> None:
                 # history <= target while the real prompt is still over
                 # by the schema budget.
                 state["history"], dropped = trim_history(
-                    state["history"], state["ctx_used"], NUM_CTX,
-                    tools=tools, model_name=get_active_provider().model,
+                    state["history"], state["ctx_used"], get_context_size(),
+                    tools=TOOL_SCHEMAS, model_name=get_active_provider().model,
                 )
                 if dropped:
                     with console.status(
@@ -159,15 +159,16 @@ def main() -> None:
                 **(stats or {}),
             }
             if dropped:
-                threshold = int(0.8 * NUM_CTX)
+                ctx_size = get_context_size()
+                threshold = int(0.8 * ctx_size)
                 console.print(
                     f"[dim yellow]↳ trim_history fired: ctx was "
                     f"{ctx_before_trim} (> threshold {threshold} = 80% of "
-                    f"NUM_CTX={NUM_CTX}); dropped {len(dropped) // 2} "
+                    f"ctx_size={ctx_size}); dropped {len(dropped) // 2} "
                     f"turn(s), summarized into context; will re-settle "
                     f"after next provider call[/dim yellow]"
                 )
-            console.print(build_turn_footer(state["ctx_used"], NUM_CTX, elapsed, stats or {}))
+            console.print(build_turn_footer(state["ctx_used"], get_context_size(), elapsed, stats or {}))
             console.print()
 
 

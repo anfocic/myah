@@ -13,7 +13,7 @@ from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 class OllamaProvider(Provider):
     name = "ollama"
 
-    def __init__(self, model: str, base_url: str | None = None):
+    def __init__(self, model: str, base_url: str | None = None, *, context_size: int):
         try:
             import ollama
         except ImportError as e:  # pragma: no cover - guarded for the openai-compat-only install path
@@ -23,6 +23,7 @@ class OllamaProvider(Provider):
         self._ollama = ollama
         self._client = ollama.Client(host=base_url) if base_url else ollama
         self.model = model
+        self.context_size = context_size
 
     def stream_chat(
         self,

@@ -50,6 +50,7 @@ class Provider(Protocol):
 
     name: str
     model: str
+    context_size: int
 
     def stream_chat(
         self,

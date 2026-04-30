@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from config import NUM_CTX
+from config import get_context_size
 from providers import get_active_provider
 
 
@@ -30,12 +30,13 @@ def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
     ctx_used = state["ctx_used"]
     provider = get_active_provider()
     cwd = state.get("cwd") or os.getcwd()
+    ctx_size = get_context_size()
     return {
         "model": provider.model,
         "provider": provider.name,
-        "num_ctx": NUM_CTX,
+        "num_ctx": ctx_size,
         "ctx_used": ctx_used,
-        "ctx_pct": (ctx_used / NUM_CTX) if NUM_CTX else 0.0,
+        "ctx_pct": (ctx_used / ctx_size) if ctx_size else 0.0,
         "history_turns": len(state["history"]) // 2,
         "plan_mode": bool(state.get("plan_mode", False)),
         "cwd": cwd,

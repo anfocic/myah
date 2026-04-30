@@ -16,7 +16,6 @@ from tools.git import (
     git_status,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared mock infrastructure
 # ---------------------------------------------------------------------------
@@ -111,7 +110,7 @@ def test_git_diff_worktree_default(monkeypatch):
 def test_git_diff_index(monkeypatch):
     m = GitMocker(monkeypatch)
     m.result = {"returncode": 0, "stdout": "--- a/foo.py\n+++ b/foo.py\n", "stderr": ""}
-    out = git_diff(target="index")
+    git_diff(target="index")
     assert "--cached" in m.calls[-1]
 
 

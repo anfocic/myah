@@ -24,7 +24,7 @@ from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response
 from agent.system_prompt import build_system_prompt
 from agent.tokens import count_tokens, truncate_tool_result
-from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW
+from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW, get_context_size
 from display import StreamingMarkdown
 from providers import Provider, ProviderError, Usage, get_active_provider
 from providers.base import ToolCall
@@ -303,18 +303,19 @@ def run_agent(
         # Intra-turn context relief. Fires when a tool-heavy turn has racked
         # up enough results to push ctx past the threshold. Does nothing on
         # iteration 1 (no tool messages yet) or when the count is small.
-        if ctx_used > MICROCOMPACT_CTX_THRESHOLD * NUM_CTX:
+        ctx_size = get_context_size()
+        if ctx_used > MICROCOMPACT_CTX_THRESHOLD * ctx_size:
             ctx_before = ctx_used
             n_elided = microcompact(messages)
             if n_elided:
                 ctx_used = count_tokens(messages, tools=tools, model_name=provider.model)
                 if console:
-                    threshold = int(MICROCOMPACT_CTX_THRESHOLD * NUM_CTX)
+                    threshold = int(MICROCOMPACT_CTX_THRESHOLD * ctx_size)
                     console.print(
                         f"[dim yellow]↳ microcompact fired: ctx {ctx_before} → "
                         f"{ctx_used} (threshold {threshold} = "
                         f"{int(MICROCOMPACT_CTX_THRESHOLD * 100)}% of "
-                        f"NUM_CTX={NUM_CTX}); elided {n_elided} old tool "
+                        f"ctx_size={ctx_size}); elided {n_elided} old tool "
                         f"result(s)[/dim yellow]"
                     )
         if debug and console:

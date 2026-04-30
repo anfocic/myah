@@ -39,6 +39,7 @@ class FakeProvider:
     `done=True` chunk with usage."""
     name = "fake"
     model = "fake-model-v1"
+    context_size = 32768
 
     def __init__(self, script: list[ScriptedTurn]):
         self._script = list(script)

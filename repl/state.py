@@ -4,7 +4,6 @@ TypedDict is a type-checker-only construct, so editors catch typos like
 is transient: cmd_retry sets it, the REPL loop pops it."""
 import os
 from collections import deque
-from pathlib import Path
 from typing import NotRequired, TypedDict
 
 # Cap on the in-memory snapshot stack used by /rewind. Each snapshot is a
