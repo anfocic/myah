@@ -10,13 +10,15 @@ Adding a new tool is three edits in this file: import the function, add a
 schema entry, add an `execute_tool` branch. CONCEPTS §36 argues for
 narrow named tools over generic shell (for small models), which is why
 `git_checkout` exists even though `bash` could do the same job."""
+
 from typing import Any
 
 from repl.console import console
 from repl.state import State
 from tools.bash import bash as run_bash
+from tools.cd import cd, pwd, resolve_against
 from tools.files import edit_file, read_file, write_file
-from tools.git import git_checkout
+from tools.git import git_branch_list, git_checkout, git_diff, git_log, git_status
 from tools.harness import harness_info
 from tools.search import glob, grep
 from tools.subagent import spawn_subagent
@@ -34,6 +36,31 @@ tools: list[dict[str, Any]] = [
             "name": "get_current_time",
             "description": "Returns the current date and time",
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pwd",
+            "description": "Print the harness current working directory. Returns the absolute path as a string.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cd",
+            "description": "Change the harness working directory. Resolves <path> relative to the current harness cwd. Use .. for parent. Refuses to escape the cwd guard. Returns the new directory path, or an error message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The directory path to change to. Supports relative paths (.., ../sibling) and absolute paths.",
+                    },
+                },
+                "required": ["path"],
+            },
         },
     },
     {
@@ -257,6 +284,84 @@ tools: list[dict[str, Any]] = [
             },
         },
     },
+    # ---- git tools ----
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Return the output of `git status`. By default uses porcelain mode (machine-parseable).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "porcelain": {
+                        "type": "boolean",
+                        "description": "Use porcelain mode (machine-parseable, no ANSI). Defaults to true.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": (
+                "Return the output of `git diff` for the specified target. "
+                "worktree = unstaged changes (default); index = staged changes; "
+                "commit = changes introduced by a specific commit (requires ref)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["worktree", "index", "commit"],
+                        "description": "What to diff: worktree (default), index (staged), or commit.",
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Commit ref — required when target is 'commit', ignored otherwise.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Return `git log` output. Shows recent commits with messages.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of commits to show (default 10, max 100).",
+                    },
+                    "with_stat": {
+                        "type": "boolean",
+                        "description": "Include file change statistics per commit.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_branch_list",
+            "description": "List local or remote-tracking branches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remote": {
+                        "type": "boolean",
+                        "description": "List remote-tracking branches instead of local ones.",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 TOOL_NAMES = [t["function"]["name"] for t in tools]
@@ -276,30 +381,49 @@ def make_execute_tool(state: State, permission_check=None):
         # Args come from the model, which occasionally omits required keys.
         # Return the error as a tool result so the model can recover instead of
         # crashing the REPL.
+        # Path-resolution rule: every model-supplied path arg below goes through
+        # resolve_against(cwd, ...) before reaching the tool, so the model's
+        # `cd` movement is honored uniformly. Tools themselves stay
+        # cwd-state-ignorant; this dispatcher is the single bridge.
+        # state.get() so test fixtures that hand-construct a State (instead of
+        # using new_state()) don't crash.
+        import os as _os
+        cwd = state.get("cwd") or _os.getcwd()
         try:
             if name == "get_current_time":
                 return get_current_time()
+            elif name == "pwd":
+                return pwd(lambda: cwd)
+            elif name == "cd":
+                return cd(
+                    lambda: cwd,
+                    lambda new_cwd: state.__setitem__("cwd", new_cwd),
+                    args["path"],
+                )
             elif name == "read_file":
                 return read_file(
-                    args["path"],
+                    resolve_against(cwd, args["path"]),
                     int(args.get("offset", 1)),
                     int(args["limit"]) if "limit" in args else None,
                 )
             elif name == "write_file":
-                return write_file(args["path"], args["content"])
+                return write_file(resolve_against(cwd, args["path"]), args["content"])
             elif name == "edit_file":
                 return edit_file(
-                    args["path"],
+                    resolve_against(cwd, args["path"]),
                     args["old_string"],
                     args["new_string"],
                     bool(args.get("replace_all", False)),
                 )
             elif name == "glob":
-                return glob(args["pattern"], args.get("path", "."))
+                return glob(
+                    args["pattern"],
+                    resolve_against(cwd, args.get("path", ".")),
+                )
             elif name == "grep":
                 return grep(
                     args["pattern"],
-                    args.get("path", "."),
+                    resolve_against(cwd, args.get("path", ".")),
                     args.get("glob"),
                     args.get("output_mode", "files_with_matches"),
                 )
@@ -309,15 +433,39 @@ def make_execute_tool(state: State, permission_check=None):
                     int(args.get("max_results", 5)),
                 )
             elif name == "bash":
+                # If the model passes its own cwd, resolve it against the
+                # harness cwd; otherwise fall back to the harness cwd itself.
+                bash_cwd = (
+                    resolve_against(cwd, args["cwd"]) if "cwd" in args else cwd
+                )
                 return run_bash(
                     args["command"],
-                    args.get("cwd", "."),
+                    bash_cwd,
                     int(args.get("timeout", 30)),
                 )
             elif name == "harness_info":
                 return harness_info(state, TOOL_NAMES)
             elif name == "git_checkout":
-                return git_checkout(args["branch"])
+                return git_checkout(args["branch"], cwd=cwd)
+            elif name == "git_status":
+                return git_status(bool(args.get("porcelain", True)), cwd=cwd)
+            elif name == "git_diff":
+                return git_diff(
+                    target=args.get("target", "worktree"),
+                    ref=args.get("ref", ""),
+                    cwd=cwd,
+                )
+            elif name == "git_log":
+                return git_log(
+                    limit=int(args.get("limit", 10)),
+                    with_stat=bool(args.get("with_stat", False)),
+                    cwd=cwd,
+                )
+            elif name == "git_branch_list":
+                return git_branch_list(
+                    remote=bool(args.get("remote", False)),
+                    cwd=cwd,
+                )
             elif name == "spawn_subagent":
                 return spawn_subagent(
                     task=args["task"],
@@ -326,6 +474,7 @@ def make_execute_tool(state: State, permission_check=None):
                     permission_check=permission_check,
                     console=console,
                     plan_mode=bool(state.get("plan_mode", False)),
+                    cwd=cwd,
                 )
             return "Tool not found"
         except KeyError as e:

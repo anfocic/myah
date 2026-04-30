@@ -12,7 +12,7 @@ def _truncate(text: str, name: str) -> str:
     return text
 
 
-def bash(command: str, cwd: str = ".", timeout: int = DEFAULT_TIMEOUT):
+def bash(command: str, cwd: str | None = ".", timeout: int = DEFAULT_TIMEOUT):
     """Run a shell command, returning stdout + stderr + exit code.
 
     Sensitive by design: the permission layer gates every call so the user
@@ -20,10 +20,14 @@ def bash(command: str, cwd: str = ".", timeout: int = DEFAULT_TIMEOUT):
     because the "attacker" (the LLM) can't reach the shell without a human
     authorizing the string first.
 
+    `cwd` is the directory the shell runs in. The harness dispatcher passes
+    state["cwd"] when the model omits the argument, so the model's `cd`
+    movement is honored. None falls back to the process cwd.
+
     Output is capped at MAX_OUTPUT_BYTES per stream to keep a noisy command
     (`ls -R /` etc.) from nuking the context window.
     """
-    resolved_cwd = os.path.expanduser(cwd)
+    resolved_cwd = os.path.expanduser(cwd) if cwd else os.getcwd()
     if not os.path.isdir(resolved_cwd):
         return f"Working directory not found: {cwd}"
 

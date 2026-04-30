@@ -81,12 +81,12 @@ def test_build_prompt_omits_badges_when_clean():
 
 
 def test_build_rprompt_order_is_branch_pct_model(monkeypatch):
-    """Layout contract: `branch · ctx% · provider:model`, left-to-right."""
+    """Layout contract: `cwd · branch · ctx% · provider:model`, left-to-right."""
     monkeypatch.setattr(ui, "_current_branch", lambda: "feat/rprompt-pass")
     state = new_state()
     state["ctx_used"] = 1024
     rendered = _rendered(build_rprompt(state))
-    assert rendered == "feat/rprompt-pass · 25% · ollama:qwen2.5:7b-instruct"
+    assert rendered == "mia · feat/rprompt-pass · 25% · ollama:qwen2.5:7b-instruct"
 
 
 def test_build_rprompt_keeps_full_model_name_with_org(monkeypatch):
@@ -106,8 +106,8 @@ def test_build_rprompt_keeps_full_model_name_with_org(monkeypatch):
 def test_build_rprompt_omits_branch_segment_when_not_in_repo():
     state = new_state()
     rendered = _rendered(build_rprompt(state))
-    # No branch segment → pct leads, one ` · ` separator before the model.
-    assert rendered == "0% · ollama:qwen2.5:7b-instruct"
+    # cwd · ctx% · model (no branch segment when not in a git repo).
+    assert rendered == "mia · 0% · ollama:qwen2.5:7b-instruct"
 
 
 def test_build_rprompt_gradient_shifts_with_ctx():

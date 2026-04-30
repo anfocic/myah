@@ -14,35 +14,45 @@ from agent import READ_ONLY_TOOLS
 from providers import get_active_provider
 
 
-def _git(*args: str) -> str | None:
+def _git(*args: str, cwd: str | None = None) -> str | None:
     """Run a git command, return stripped stdout, or None on any failure
-    (not a repo, git missing, detached state, etc.)."""
+    (not a repo, git missing, detached state, etc.).
+
+    `cwd` selects the directory git runs in so the env block can describe
+    the repo the model is currently sitting inside, not the process startup
+    repo, when the two diverge after `cd`."""
     try:
         out = subprocess.check_output(
             ["git", *args],
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=2,
+            cwd=cwd,
         )
         return out.strip() or None
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
 
-def _env_block() -> str:
+def _env_block(cwd: str | None = None) -> str:
     """Compact environment snapshot prepended to every system prompt so the
     model has cwd / platform / git state on turn 1 without burning a tool
-    call. Kept small — ~80-120 tokens depending on git state."""
+    call. Kept small — ~80-120 tokens depending on git state.
+
+    `cwd` is the harness-tracked working directory (state["cwd"]) so the
+    block reflects the model's `cd` movement. None falls back to the
+    process cwd, which is correct on turn 1 before any cd has happened."""
+    effective_cwd = cwd or os.getcwd()
     lines = [
-        f"cwd: {os.getcwd()}",
+        f"cwd: {effective_cwd}",
         f"platform: {platform.system().lower()} ({platform.machine()})",
         f"date: {date.today().isoformat()}",
     ]
-    branch = _git("branch", "--show-current")
+    branch = _git("branch", "--show-current", cwd=effective_cwd)
     if branch:
-        main_ref = _git("rev-parse", "--abbrev-ref", "origin/HEAD")
+        main_ref = _git("rev-parse", "--abbrev-ref", "origin/HEAD", cwd=effective_cwd)
         main = main_ref.split("/", 1)[-1] if main_ref else "main"
-        porcelain = _git("status", "--porcelain")
+        porcelain = _git("status", "--porcelain", cwd=effective_cwd)
         dirty = len(porcelain.splitlines()) if porcelain else 0
         lines.append(f"git: branch={branch} main={main} dirty={dirty}")
     else:
@@ -60,7 +70,7 @@ _SERVED_VIA = {
 
 
 def build_system_prompt_parts(
-    plan_mode: bool = False, subagent: bool = False,
+    plan_mode: bool = False, subagent: bool = False, cwd: str | None = None,
 ) -> dict[str, str]:
     """Return the system prompt as its named parts so callers like /profile
     can show a per-source token breakdown. `build_system_prompt` is a thin
@@ -100,12 +110,13 @@ Rules:
 
     parts: dict[str, str] = {
         "persona": persona,
-        "env": _env_block(),
+        "env": _env_block(cwd),
     }
 
     # Re-read every turn so edits to CLAUDE.md take effect without restarting.
-    # File is typically small; re-read cost is negligible vs. an LLM call.
-    claude_md = Path("CLAUDE.md")
+    # Anchored to the harness cwd (state["cwd"]) so a `cd` into a sibling
+    # project surfaces THAT project's CLAUDE.md, not the startup one.
+    claude_md = Path(cwd) / "CLAUDE.md" if cwd else Path("CLAUDE.md")
     if claude_md.is_file():
         try:
             parts["claude_md"] = (
@@ -134,12 +145,18 @@ Rules:
     return parts
 
 
-def build_system_prompt(plan_mode: bool = False, subagent: bool = False) -> str:
+def build_system_prompt(
+    plan_mode: bool = False, subagent: bool = False, cwd: str | None = None,
+) -> str:
     """Base persona + env block + (if the cwd has a CLAUDE.md) project
     context + (if plan mode) planning rules. Reads model + provider from
     the live adapter so /model swaps take effect on the next turn.
 
+    `cwd` is the harness-tracked working directory so the env block, the
+    git status line, and the CLAUDE.md lookup all reflect the model's
+    current location after `cd`. None falls back to the process cwd.
+
     `subagent=True` swaps the persona for a subagent-focused one: no
     pleasantries, no clarifying questions, return a concise final answer
     because the parent agent is waiting on a tool result. See §43."""
-    return "\n\n".join(build_system_prompt_parts(plan_mode, subagent).values())
+    return "\n\n".join(build_system_prompt_parts(plan_mode, subagent, cwd).values())

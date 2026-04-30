@@ -8,12 +8,13 @@ from config import NUM_CTX
 from providers import get_active_provider
 
 
-def _git_branch() -> str:
+def _git_branch(cwd: str | None = None) -> str:
     try:
         out = subprocess.check_output(
             ["git", "branch", "--show-current"],
             stderr=subprocess.DEVNULL,
             text=True,
+            cwd=cwd,
         ).strip()
         return out or "(detached)"
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -28,6 +29,7 @@ def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
     live adapter so /model swaps show up immediately."""
     ctx_used = state["ctx_used"]
     provider = get_active_provider()
+    cwd = state.get("cwd") or os.getcwd()
     return {
         "model": provider.model,
         "provider": provider.name,
@@ -36,8 +38,8 @@ def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
         "ctx_pct": (ctx_used / NUM_CTX) if NUM_CTX else 0.0,
         "history_turns": len(state["history"]) // 2,
         "plan_mode": bool(state.get("plan_mode", False)),
-        "cwd": os.getcwd(),
-        "git_branch": _git_branch(),
+        "cwd": cwd,
+        "git_branch": _git_branch(cwd),
         "date": date.today().isoformat(),
         "tools": tool_names,
     }
