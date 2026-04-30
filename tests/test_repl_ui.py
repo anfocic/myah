@@ -32,6 +32,9 @@ def _stub_branch(monkeypatch):
     prompt and break `test_build_prompt_omits_badges_when_clean`."""
     monkeypatch.setattr(ui, "_current_branch", lambda: None)
     monkeypatch.setattr(ui, "get_context_size", lambda: 4096)
+    # Pin the cwd basename so the rendered-string assertions don't depend
+    # on the test runner's working directory (locally `mia`, in CI `myah`).
+    monkeypatch.setattr(ui, "_short_cwd", lambda cwd: "mia")
     monkeypatch.setattr(
         ui,
         "get_active_provider",
