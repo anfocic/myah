@@ -87,6 +87,48 @@ def test_always_allow_is_scoped_to_exact_call(monkeypatch):
     ) is False
 
 
+def test_keyboard_interrupt_during_parallel_propagates_and_shuts_down():
+    """Ctrl+C raised inside a parallel tool worker must propagate through
+    `_run_tools_parallel` (so the REPL can break the turn) without leaving
+    the executor blocked on slow workers via wait=True.
+
+    We measure wall time: the slow worker sleeps 5s, but the test must
+    return well under that — proves shutdown(wait=False) is honored."""
+    fast_started = threading.Event()
+    slow_started = threading.Event()
+
+    def fake_execute(name, args):
+        if args["path"] == "fast":
+            fast_started.set()
+            # Wait until the slow tool is in flight so as_completed has a
+            # pending future when the interrupt fires.
+            slow_started.wait(timeout=2.0)
+            raise KeyboardInterrupt("user pressed ctrl-c")
+        else:
+            slow_started.set()
+            time.sleep(5.0)
+            return "slow done"
+
+    calls = [
+        ToolCall(name="read_file", arguments={"path": "fast"}),
+        ToolCall(name="read_file", arguments={"path": "slow"}),
+    ]
+
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        _run_tools_parallel(
+            calls,
+            fake_execute,
+            permission_check=lambda *a, **kw: True,
+            plan_mode=False,
+        )
+    elapsed = time.monotonic() - started
+
+    assert fast_started.is_set()
+    # If the executor waited for the slow worker, we'd see ~5s.
+    assert elapsed < 3.0, f"executor blocked on slow worker ({elapsed:.2f}s)"
+
+
 def test_mutating_tools_run_serially_to_avoid_races():
     calls = [
         ToolCall(name="write_file", arguments={"path": "x", "content": "1"}),
