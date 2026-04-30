@@ -89,6 +89,24 @@ else:
 
 # ── Context ──────────────────────────────────────────────────────────────────
 NUM_CTX = _context_cfg.get("num_ctx", 32768)
+
+
+def get_context_size() -> int:
+    """Return the active provider's context window size.
+
+    Falls back to NUM_CTX when no provider is active (early import, tests).
+    Hosted providers report their own native window (e.g. OpenAI = 128K,
+    Anthropic = 200K); local providers use the user-configured NUM_CTX."""
+    try:
+        from providers import get_active_provider
+    except ImportError:
+        return NUM_CTX
+    try:
+        return get_active_provider().context_size
+    except Exception:
+        return NUM_CTX
+
+
 RESERVED_COMPLETION_TOKENS = _context_cfg.get("reserved_completion_tokens", 1024)
 TOOL_RESULT_MAX_BYTES = _context_cfg.get("tool_result_max_bytes", 10_000)
 

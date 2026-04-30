@@ -46,12 +46,14 @@ class AnthropicProvider(Provider):
         api_key: str,
         base_url: str = "https://api.anthropic.com/v1",
         max_tokens: int = 4096,
+        context_size: int = 200_000,
     ):
         if not api_key:
             raise ProviderError(
                 "ANTHROPIC_API_KEY is not set — export it or use another provider"
             )
         self.model = model
+        self.context_size = context_size
         self._base = base_url.rstrip("/")
         self._max_tokens = max_tokens
         self._headers = {

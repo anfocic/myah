@@ -10,7 +10,7 @@ from rich.panel import Panel
 from agent import apply_summary, compact_history
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens
-from config import NUM_CTX
+from config import NUM_CTX, get_context_size
 from providers import (
     SUPPORTED_PROVIDERS,
     ProviderError,
@@ -152,11 +152,11 @@ def cmd_context(state: State, arg: str = "") -> None:
     messages = _next_turn_messages(state)
     count, source = _count_or_estimate(provider, messages, REGISTERED_TOOLS)
     state["ctx_used"] = count  # keep the per-turn tag in sync with the reading
-    tag = ctx_tag(count, NUM_CTX)
+    tag = ctx_tag(count, get_context_size())
     plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
     console.print(
         f"[bold]model:[/bold] {provider.model} [dim]({provider.name})[/dim]\n"
-        f"[bold]num_ctx:[/bold] {NUM_CTX:,}\n"
+        f"[bold]num_ctx:[/bold] {get_context_size():,}\n"
         f"[bold]ctx (next turn):[/bold] {count:,} {tag} [dim]· {source}[/dim]\n"
         f"[bold]history turns:[/bold] {len(state['history']) // 2}\n"
         f"[bold]plan mode:[/bold] {plan}\n"
@@ -171,9 +171,9 @@ def cmd_stats(state: State, arg: str = "") -> None:
     if not last:
         console.print("[dim]↳ no completed turn yet[/dim]")
         return
-    tag = ctx_tag(last["ctx_used"], NUM_CTX)
+    tag = ctx_tag(last["ctx_used"], get_context_size())
     parts = [
-        f"[bold]ctx:[/bold] {last['ctx_used']:,}/{NUM_CTX:,} {tag}",
+        f"[bold]ctx:[/bold] {last['ctx_used']:,}/{get_context_size():,} {tag}",
         f"[bold]wall:[/bold] {last['elapsed_s']:.1f}s",
     ]
     if last.get("ttft_ms") is not None:
@@ -337,22 +337,23 @@ def cmd_profile(state: State, arg: str = "") -> None:
         total = system_row + user_row + asst_row
         source = f"estimate ({type(e).__name__}: {e})"
 
-    total_pct = (total / NUM_CTX * 100) if NUM_CTX > 0 else 0.0
+    ctx_size = get_context_size()
+    total_pct = (total / ctx_size * 100) if ctx_size > 0 else 0.0
 
     lines = [
-        _profile_row("system", system_row, NUM_CTX),
-        _profile_row("user", user_row, NUM_CTX),
-        _profile_row("assistant", asst_row, NUM_CTX),
-        _profile_row("tools", tools_row, NUM_CTX),
-        _profile_row("framing", framing, NUM_CTX),
+        _profile_row("system", system_row, ctx_size),
+        _profile_row("user", user_row, ctx_size),
+        _profile_row("assistant", asst_row, ctx_size),
+        _profile_row("tools", tools_row, ctx_size),
+        _profile_row("framing", framing, ctx_size),
         "",
-        f"  [bold]total:[/bold] {total:,} / {NUM_CTX:,}  ({total_pct:.1f}%)  [dim]· {source}[/dim]",
+        f"  [bold]total:[/bold] {total:,} / {ctx_size:,}  ({total_pct:.1f}%)  [dim]· {source}[/dim]",
         "  [dim]tool messages are intra-turn and not shown[/dim]",
     ]
 
     title = (
         f"[bold]Context profile[/bold] [dim]· {provider.model} "
-        f"({provider.name}) · NUM_CTX={NUM_CTX:,}[/dim]"
+        f"({provider.name}) · num_ctx={ctx_size:,}[/dim]"
     )
     console.print(Panel("\n".join(lines), title=title, border_style="dim", padding=(1, 2)))
 

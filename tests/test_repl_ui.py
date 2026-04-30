@@ -31,7 +31,7 @@ def _stub_branch(monkeypatch):
     `feat/plan-something` would otherwise leak "plan" into the rendered
     prompt and break `test_build_prompt_omits_badges_when_clean`."""
     monkeypatch.setattr(ui, "_current_branch", lambda: None)
-    monkeypatch.setattr(ui, "NUM_CTX", 4096)
+    monkeypatch.setattr(ui, "get_context_size", lambda: 4096)
     monkeypatch.setattr(
         ui,
         "get_active_provider",

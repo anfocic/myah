@@ -12,7 +12,7 @@ under budget:
 Each layer catches a different failure mode; per CONCEPTS §35 you only
 notice you need the next one when the previous starts to leak."""
 from agent.tokens import count_tokens
-from config import NUM_CTX, RESERVED_COMPLETION_TOKENS
+from config import NUM_CTX, RESERVED_COMPLETION_TOKENS, get_context_size
 from providers import ProviderError, get_active_provider
 
 
@@ -154,7 +154,7 @@ def summarize_dropped(dropped: list) -> str:
                 },
                 {"role": "user", "content": transcript},
             ],
-            num_ctx=NUM_CTX,
+            num_ctx=get_context_size(),
         )
     except ProviderError:
         return _extractive_summary(dropped)

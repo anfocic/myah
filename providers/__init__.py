@@ -68,17 +68,13 @@ def build_provider(name: str, model: str) -> Provider:
         )
 
     if name == "openai":
-        # First-party OpenAI. Reuses the openai-compat adapter because the
-        # Chat Completions wire format is identical — the only difference
-        # from the generic compat path is a hardcoded base URL and a
-        # dedicated API-key env var. If/when we want Responses API or
-        # reasoning_effort plumbing, that motivates a separate adapter.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENAI_BASE_URL", _OPENAI_BASE_URL),
             api_key=os.environ.get("OPENAI_API_KEY", ""),
+            context_size=128_000,
         )
         provider.name = "openai"
         return provider
@@ -93,24 +89,18 @@ def build_provider(name: str, model: str) -> Provider:
         )
 
     if name == "deepseek":
-        # DeepSeek exposes an OpenAI-compatible endpoint; same adapter,
-        # different host + API-key env var. Split into a dedicated adapter
-        # if/when DeepSeek-specific features (FIM, reasoning-mode toggles
-        # for `deepseek-reasoner`) need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("DEEPSEEK_BASE_URL", _DEEPSEEK_BASE_URL),
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            context_size=64_000,
         )
         provider.name = "deepseek"
         return provider
 
     if name == "google":
-        # Google exposes an OpenAI-compatible endpoint; same adapter,
-        # different host + API-key env var. Split into a dedicated adapter
-        # if/when Gemini-specific features need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
@@ -120,20 +110,20 @@ def build_provider(name: str, model: str) -> Provider:
                 "https://generativelanguage.googleapis.com/v1beta/openai",
             ),
             api_key=os.environ.get("GOOGLE_API_KEY", ""),
+            context_size=32_000,
         )
         provider.name = "google"
         return provider
 
     if name == "opencode":
-        # OpenCode exposes an OpenAI-compatible endpoint; same adapter,
-        # different host + API-key env var. Split into a dedicated adapter
-        # if/when OpenCode-specific features need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENCODE_BASE_URL", _OPENCODE_BASE_URL),
             api_key=os.environ.get("OPENCODE_API_KEY", ""),
+            include_reasoning_in_history=True,
+            context_size=128_000,
         )
         provider.name = "opencode"
         return provider

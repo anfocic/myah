@@ -23,6 +23,9 @@ class OllamaProvider(Provider):
         self._ollama = ollama
         self._client = ollama.Client(host=base_url) if base_url else ollama
         self.model = model
+        from config import NUM_CTX
+
+        self.context_size = NUM_CTX
 
     def stream_chat(
         self,
