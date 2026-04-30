@@ -492,8 +492,6 @@ def cmd_model(state: State, arg: str = "") -> None:
 
 def cmd_cd(state: State, arg: str = "") -> None:
     """Change the harness working directory. No arg → print current directory."""
-    import os
-
     path = arg.strip()
     if not path:
         console.print(state["cwd"])
