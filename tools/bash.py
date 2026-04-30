@@ -2,6 +2,8 @@
 import os
 import subprocess
 
+from tools.spec import register
+
 MAX_OUTPUT_BYTES = 50_000
 DEFAULT_TIMEOUT = 30
 
@@ -58,3 +60,38 @@ def bash(command: str, cwd: str | None = ".", timeout: int = DEFAULT_TIMEOUT):
         parts.append(f"[stderr]\n{stderr}")
     parts.append(f"exit: {proc.returncode}")
     return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
+
+
+def _bash_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    bash_cwd = resolve_against(cwd, args["cwd"]) if "cwd" in args else cwd
+    return bash(
+        args["command"],
+        bash_cwd,
+        int(args.get("timeout", 30)),
+    )
+
+
+register(
+    name="bash",
+    description="Run a shell command. Use for git, running tests, builds, package management, or any shell-only operation. Returns stdout, stderr, and exit code. Requires user permission for each call.",
+    adapter=_bash_adapter,
+    properties={
+        "command": {"type": "string", "description": "Shell command to run"},
+        "cwd": {
+            "type": "string",
+            "description": "Working directory. Defaults to the REPL's current directory.",
+        },
+        "timeout": {
+            "type": "integer",
+            "description": "Timeout in seconds. Defaults to 30.",
+        },
+    },
+    required=["command"],
+    read_only=False,
+)

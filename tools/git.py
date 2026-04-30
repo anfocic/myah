@@ -7,8 +7,11 @@ instead of invoking `bash(git checkout ...)`.
 All tools here are intentionally read-only (no `git reset`, `git rebase`,
 `git commit --amend`, etc.). The harness exposes mutation through named,
 user-approved channels only."""
+
 import subprocess
 from typing import Literal
+
+from tools.spec import register
 
 _subprocess_timeout = 10  # seconds for all git subprocess calls
 
@@ -58,13 +61,16 @@ def git_checkout(branch: str, cwd: str | None = None) -> str:
         return f"Refusing to check out suspicious branch name: {branch!r}"
 
     try:
-        current = subprocess.check_output(
-            ["git", "branch", "--show-current"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=5,
-            cwd=cwd,
-        ).strip() or "(detached HEAD)"
+        current = (
+            subprocess.check_output(
+                ["git", "branch", "--show-current"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                cwd=cwd,
+            ).strip()
+            or "(detached HEAD)"
+        )
     except (subprocess.SubprocessError, FileNotFoundError):
         current = "unknown"
 
@@ -211,3 +217,123 @@ def git_branch_list(
             return "(no remote-tracking branches)"
         return "(no local branches)"
     return output
+
+
+# ---------------------------------------------------------------------------
+# Adapters
+# ---------------------------------------------------------------------------
+
+
+def _git_checkout_adapter(args: dict, cwd: str):
+    return git_checkout(args["branch"], cwd=cwd)
+
+
+register(
+    name="git_checkout",
+    description="Switch to a git branch. Equivalent to `git checkout <branch>`. ALWAYS use this whenever the user asks to switch, check out, or move to a branch — never simulate the action in text and never fabricate output.",
+    adapter=_git_checkout_adapter,
+    properties={
+        "branch": {
+            "type": "string",
+            "description": "Branch name to switch to (e.g. 'main', 'feat/foo').",
+        },
+    },
+    required=["branch"],
+    read_only=False,
+)
+
+
+def _git_status_adapter(args: dict, cwd: str):
+    return git_status(bool(args.get("porcelain", True)), cwd=cwd)
+
+
+register(
+    name="git_status",
+    description="Return the output of `git status`. By default uses porcelain mode (machine-parseable).",
+    adapter=_git_status_adapter,
+    properties={
+        "porcelain": {
+            "type": "boolean",
+            "description": "Use porcelain mode (machine-parseable, no ANSI). Defaults to true.",
+        },
+    },
+    read_only=True,
+)
+
+
+def _git_diff_adapter(args: dict, cwd: str):
+    return git_diff(
+        target=args.get("target", "worktree"),
+        ref=args.get("ref", ""),
+        cwd=cwd,
+    )
+
+
+register(
+    name="git_diff",
+    description=(
+        "Return the output of `git diff` for the specified target. "
+        "worktree = unstaged changes (default); index = staged changes; "
+        "commit = changes introduced by a specific commit (requires ref)."
+    ),
+    adapter=_git_diff_adapter,
+    properties={
+        "target": {
+            "type": "string",
+            "enum": ["worktree", "index", "commit"],
+            "description": "What to diff: worktree (default), index (staged), or commit.",
+        },
+        "ref": {
+            "type": "string",
+            "description": "Commit ref — required when target is 'commit', ignored otherwise.",
+        },
+    },
+    read_only=True,
+)
+
+
+def _git_log_adapter(args: dict, cwd: str):
+    return git_log(
+        limit=int(args.get("limit", 10)),
+        with_stat=bool(args.get("with_stat", False)),
+        cwd=cwd,
+    )
+
+
+register(
+    name="git_log",
+    description="Return `git log` output. Shows recent commits with messages.",
+    adapter=_git_log_adapter,
+    properties={
+        "limit": {
+            "type": "integer",
+            "description": "Number of commits to show (default 10, max 100).",
+        },
+        "with_stat": {
+            "type": "boolean",
+            "description": "Include file change statistics per commit.",
+        },
+    },
+    read_only=True,
+)
+
+
+def _git_branch_list_adapter(args: dict, cwd: str):
+    return git_branch_list(
+        remote=bool(args.get("remote", False)),
+        cwd=cwd,
+    )
+
+
+register(
+    name="git_branch_list",
+    description="List local or remote-tracking branches.",
+    adapter=_git_branch_list_adapter,
+    properties={
+        "remote": {
+            "type": "boolean",
+            "description": "List remote-tracking branches instead of local ones.",
+        },
+    },
+    read_only=True,
+)

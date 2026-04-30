@@ -80,7 +80,7 @@ def test_registry_exposes_and_dispatches_web_search(monkeypatch, state):
     assert schema["function"]["parameters"]["required"] == ["query"]
 
     monkeypatch.setattr(
-        "repl.tool_registry.web_search",
+        "tools.web_search.web_search",
         lambda query, max_results=5: f"search:{query}:{max_results}",
     )
 

@@ -125,10 +125,33 @@ In plan mode, only read-only tools run; mutating tools are short-circuited so th
 
 ## Adding a Tool
 
-1. Implement the function in `tools/`
-2. Add its OpenAI-style schema to `repl/tool_registry.py`
-3. Add a branch in `make_execute_tool()`
+1. Implement the function in `tools/<module>.py`
+2. Add an adapter + `register()` call at the bottom of that same file:
+
+```python
+from tools.spec import register
+
+def _my_tool_adapter(args: dict, cwd: str):
+    # Resolve paths against cwd, apply defaults, then call the tool.
+    from tools.cd import resolve_against
+    return my_tool(resolve_against(cwd, args["path"]))
+
+register(
+    name="my_tool",
+    description="What the tool does...",
+    adapter=_my_tool_adapter,
+    properties={
+        "path": {"type": "string", "description": "File path"},
+    },
+    required=["path"],
+    read_only=True,   # or False for mutating tools
+)
+```
+
+3. If the tool needs `state` (e.g. `harness_info`) or a closure (`spawn_subagent`),
+   keep it as a special case in `repl/tool_registry.py` instead.
 4. Decide whether it should be read-only or permission-gated / plan-mode-blocked
+   (`agent/__init__.py` -> `READ_ONLY_TOOLS`)
 5. Add or extend tests under `tests/`
 
 The schema shape follows OpenAI function calling:

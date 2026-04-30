@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from security import is_within_cwd, refuse_outside_cwd
+from tools.spec import register
 
 SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "logs", "node_modules"}
 MAX_FILE_BYTES = 1_000_000
@@ -142,3 +143,66 @@ def glob(pattern: str, path: str = "."):
     if truncated:
         out += f"\n... (truncated at {MAX_RESULTS} results)"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Adapters
+# ---------------------------------------------------------------------------
+
+
+def _glob_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    return glob(
+        args["pattern"],
+        resolve_against(cwd, args.get("path", ".")),
+    )
+
+
+register(
+    name="glob",
+    description="Find files by name or glob pattern, recursively. Use this to resolve a bare filename (e.g. 'search.py') to its full path before reading or editing. Accepts 'search.py', '*.py', or '**/*.md'.",
+    adapter=_glob_adapter,
+    properties={
+        "pattern": {"type": "string", "description": "Filename or glob pattern to match"},
+        "path": {
+            "type": "string",
+            "description": "Directory to search from. Defaults to current working directory.",
+        },
+    },
+    required=["pattern"],
+    read_only=True,
+)
+
+
+def _grep_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    return grep(
+        args["pattern"],
+        resolve_against(cwd, args.get("path", ".")),
+        args.get("glob"),
+        args.get("output_mode", "files_with_matches"),
+    )
+
+
+register(
+    name="grep",
+    description="Regex search across files under a path. Returns matching file paths by default, or path:line:text when output_mode is 'content'.",
+    adapter=_grep_adapter,
+    properties={
+        "pattern": {"type": "string", "description": "Python regex to search for"},
+        "path": {
+            "type": "string",
+            "description": "Directory or file to search. Defaults to the current working directory.",
+        },
+        "glob": {
+            "type": "string",
+            "description": "Optional glob filter like '*.py' or '**/*.md'",
+        },
+        "output_mode": {
+            "type": "string",
+            "description": "'files_with_matches' (default) or 'content'",
+        },
+    },
+    required=["pattern"],
+    read_only=True,
+)

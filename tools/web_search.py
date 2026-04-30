@@ -9,6 +9,8 @@ import os
 
 import httpx
 
+from tools.spec import register
+
 from env import load_dotenv
 
 SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -169,3 +171,31 @@ def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
     sections = sorted(k for k, v in data.items() if isinstance(v, dict))
     suffix = f" Response sections: {', '.join(sections)}." if sections else ""
     return f"No search results found for: {query}.{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
+
+
+def _web_search_adapter(args: dict, _cwd: str):
+    return web_search(
+        args["query"],
+        int(args.get("max_results", 5)),
+    )
+
+
+register(
+    name="web_search",
+    description="Search the live public web. Use this for current events, recent facts, or external information that may not be in the model's training data.",
+    adapter=_web_search_adapter,
+    properties={
+        "query": {"type": "string", "description": "The web search query to run."},
+        "max_results": {
+            "type": "integer",
+            "description": "How many results to return (1-20, default 5).",
+        },
+    },
+    required=["query"],
+    read_only=True,
+)
