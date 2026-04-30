@@ -9,7 +9,6 @@ with readline's prior format, which is why the filename changed when the
 engine was swapped."""
 
 import colorsys
-import os
 import subprocess
 import time
 from collections.abc import Iterable
@@ -20,12 +19,9 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
-from config import NUM_CTX
+from config import INPUT_HISTORY_FILE, NUM_CTX
 from providers import get_active_provider
 from repl.state import State
-
-INPUT_HISTORY_FILE = os.path.expanduser("~/.mia_input_history")
-
 
 _BRANCH_TTL_SECONDS = 2.0
 _branch_cached_at: float = 0.0

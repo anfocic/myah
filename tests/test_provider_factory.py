@@ -25,7 +25,7 @@ def test_supported_providers_matches_factory_branches():
     parser silently stops recognizing that prefix. This test locks them
     together."""
     assert SUPPORTED_PROVIDERS == {
-        "ollama", "openai-compat", "openai", "anthropic", "deepseek", "google",
+        "ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode",
     }
 
 
@@ -57,6 +57,16 @@ def test_build_google_uses_gemini_host_and_api_key():
     assert p.model == "gemini-2.5-flash"
     assert p._base == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert p._headers.get("Authorization") == "Bearer g-test"
+
+
+def test_build_opencode_uses_opencode_host_and_api_key():
+    with patch.dict(os.environ, {"OPENCODE_API_KEY": "oc-test"}, clear=False):
+        p = build_provider("opencode", "opencode/default")
+    assert isinstance(p, OpenAICompatProvider)
+    assert p.name == "opencode"
+    assert p.model == "opencode/default"
+    assert p._base == "https://api.opencode.dev/v1"
+    assert p._headers.get("Authorization") == "Bearer oc-test"
 
 
 def test_build_anthropic_requires_api_key():

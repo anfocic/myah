@@ -19,6 +19,7 @@ from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 _OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+_OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.dev/v1")
 
 # Reasonable defaults for `/model <provider-name>` with no model specified
 # and for the startup path when MYAH_PROVIDER selects one of these without
@@ -28,6 +29,7 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-chat",
     "google": "gemma-4-e4b",
+    "opencode": "opencode/default",
 }
 
 
@@ -119,14 +121,28 @@ def build_provider(name: str, model: str) -> Provider:
         provider.name = "google"
         return provider
 
+    if name == "opencode":
+        # OpenCode exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when OpenCode-specific features need bespoke handling.
+        from .openai_compat import OpenAICompatProvider
+
+        provider = OpenAICompatProvider(
+            model=model,
+            base_url=os.environ.get("OPENCODE_BASE_URL", _OPENCODE_BASE_URL),
+            api_key=os.environ.get("OPENCODE_API_KEY", ""),
+        )
+        provider.name = "opencode"
+        return provider
+
     raise ValueError(
         f"unknown provider: {name!r} "
-        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek, google)"
+        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek, google, opencode)"
     )
 
 
 SUPPORTED_PROVIDERS = frozenset(
-    {"ollama", "openai-compat", "openai", "anthropic", "deepseek", "google"}
+    {"ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode"}
 )
 
 
@@ -171,6 +187,12 @@ def get_provider() -> Provider:
         return build_provider(
             "google",
             os.environ.get("GOOGLE_MODEL", _DEFAULT_MODELS["google"]),
+        )
+
+    if MODEL_PROVIDER == "opencode":
+        return build_provider(
+            "opencode",
+            os.environ.get("OPENCODE_MODEL", _DEFAULT_MODELS["opencode"]),
         )
 
     raise ValueError(

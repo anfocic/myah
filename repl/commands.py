@@ -19,12 +19,90 @@ from providers import (
     list_ollama_models,
     set_active_provider,
 )
+from repl.config_loader import config_paths, get_config, get_provenance, reload_config
 from repl.console import console
 from repl.persistence import wipe_session
 from repl.state import State
 from repl.tool_registry import TOOL_NAMES
 from repl.tool_registry import tools as REGISTERED_TOOLS
 from repl.ui import ctx_tag
+
+
+def _config_value_repr(val) -> str:
+    """Compact repr for config values in /config display."""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, str):
+        return val
+    return str(val)
+
+
+def _flatten_dict(d: dict, prefix: str = "") -> dict[str, object]:
+    """Flatten a nested dict into dot-path keys for display."""
+    out: dict[str, object] = {}
+    for k, v in d.items():
+        path = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flatten_dict(v, path))
+        else:
+            out[path] = v
+    return out
+
+
+def cmd_config(state: State, arg: str = "") -> None:
+    """Show, reload, or edit configuration.
+
+    Arg shapes:
+        /config          — show merged config with provenance
+        /config reload   — re-read config files
+        /config path     — print config file paths
+        /config edit     — open user config in $EDITOR
+    """
+    parts = arg.strip().split()
+    sub = parts[0] if parts else ""
+
+    if sub == "reload":
+        reload_config()
+        console.print(
+            "[dim]↳ config reloaded into cache; restart for changes to "
+            "module-level constants (NUM_CTX, MODEL_NAME, etc.) to take "
+            "effect in the running harness[/dim]"
+        )
+        return
+
+    if sub == "path":
+        for label, path in config_paths().items():
+            exists = "[green]exists[/green]" if path.exists() else "[dim]missing[/dim]"
+            console.print(f"  [bold]{label}:[/bold] {path} {exists}")
+        return
+
+    if sub == "edit":
+        import shlex
+        import subprocess
+
+        user_path = config_paths()["user"]
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        if not user_path.exists():
+            user_path.write_text("{\n}\n")
+        editor = os.environ.get("EDITOR", "vi")
+        console.print(f"[dim]↳ opening {user_path} in {editor}...[/dim]")
+        # shlex.split preserves common multi-word EDITOR values like
+        # "code --wait" while keeping us off the shell (no injection).
+        subprocess.call([*shlex.split(editor), str(user_path)])
+        return
+
+    # Default: show merged config with provenance
+    cfg = get_config()
+    prov = get_provenance()
+    flat = _flatten_dict(cfg)
+    lines = ["[bold]Configuration[/bold] [dim](source in brackets)[/dim]"]
+    for key in sorted(flat):
+        val = flat[key]
+        src = prov.get(key, "default")
+        lines.append(
+            f"  [dim]{key:<40}[/dim] {_config_value_repr(val):<12} [dim][{src}][/dim]"
+        )
+    console.print("\n".join(lines))
 
 
 def cmd_help(state: State, arg: str = "") -> None:
@@ -410,6 +488,7 @@ def cmd_model(state: State, arg: str = "") -> None:
 
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
+    "/config": (cmd_config, "show/reload/edit configuration (reload | path | edit)"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
     "/context": (cmd_context, "show context window usage + harness info"),
     "/plan": (cmd_plan, "toggle plan mode (describe, don't execute)"),

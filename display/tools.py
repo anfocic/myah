@@ -172,7 +172,7 @@ def on_tool_start(name: str, args: dict, meta: dict | None = None) -> None:
     if meta:
         total = meta.get("total")
         index = meta.get("index")
-        if total and index:
+        if total and index and total > 1:
             progress = f"[dim][{index}/{total}][/dim] "
     if preview:
         console.print(f"{bullet} {progress}[bold]{name}[/bold] [dim]{preview}[/dim]")
