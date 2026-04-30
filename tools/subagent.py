@@ -30,6 +30,7 @@ def spawn_subagent(
     permission_check,
     console=None,
     plan_mode: bool = False,
+    cwd: str | None = None,
 ) -> str:
     """Run a nested `run_agent` focused on `task`. Returns the child's
     final content wrapped in a `<subagent_result>` marker so the parent
@@ -83,6 +84,7 @@ def spawn_subagent(
             permission_check=permission_check,
             plan_mode=plan_mode,
             subagent=True,
+            cwd=cwd,
         )
     finally:
         with _depth_lock:

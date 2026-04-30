@@ -9,6 +9,7 @@ with readline's prior format, which is why the filename changed when the
 engine was swapped."""
 
 import colorsys
+import os
 import subprocess
 import time
 from collections.abc import Iterable
@@ -56,6 +57,15 @@ _BRANCH_MAX = 18
 
 def _short_branch(name: str) -> str:
     return name if len(name) <= _BRANCH_MAX else name[: _BRANCH_MAX - 1] + "…"
+
+
+_CWD_MAX = 12
+
+
+def _short_cwd(cwd: str) -> str:
+    """Return the basename of cwd, shortened to _CWD_MAX chars."""
+    basename = os.path.basename(cwd) or cwd
+    return basename if len(basename) <= _CWD_MAX else basename[: _CWD_MAX - 1] + "…"
 
 
 _MODEL_MAX = 40
@@ -139,6 +149,10 @@ def build_rprompt(state: State) -> FormattedText:
     pct = _ctx_pct(ctx_used, NUM_CTX)
 
     segments: list[tuple[str, str]] = []
+    cwd_short = _short_cwd(state.get("cwd", os.getcwd()))
+    if cwd_short:
+        segments.append((_DIM, cwd_short))
+        segments.append((_DIM, " · "))
     branch = _current_branch()
     if branch:
         segments.append((_DIM, _short_branch(branch)))
