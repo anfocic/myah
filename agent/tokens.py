@@ -67,6 +67,7 @@ def count_tokens(
     messages: list,
     tools: list | None = None,
     provider=None,
+    model_name: str | None = None,
 ) -> int:
     """Best-effort token count for `messages` + optional `tools`.
 
@@ -76,7 +77,9 @@ def count_tokens(
     3. Char/4 fallback (if tiktoken somehow fails).
 
     Callers in the hot loop (e.g. `run_agent` iterating) should pass
-    `provider=None` to avoid network latency from provider-side counting.
+    `provider=None` and an explicit `model_name` to avoid network latency
+    from provider-side counting while keeping the encoding cache keyed on
+    the live model (so `/model` swaps don't drift).
     Callers doing one-off reporting (e.g. `/context`) should pass the
     provider to get exact counts when the backend supports them locally.
     """
@@ -86,7 +89,8 @@ def count_tokens(
         except Exception:
             pass
 
-    model_name = MODEL_NAME if provider is None else provider.model
+    if model_name is None:
+        model_name = MODEL_NAME if provider is None else provider.model
     try:
         encoding = _get_encoding(model_name)
     except Exception:

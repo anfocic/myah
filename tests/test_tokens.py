@@ -125,3 +125,18 @@ def test_count_tokens_reply_overhead_present():
     result = count_tokens(messages)
     # Even with zero messages we pay PER_REPLY_TOKENS
     assert result == PER_REPLY_TOKENS
+
+
+def test_count_tokens_model_name_keys_encoding_cache():
+    """Passing model_name explicitly should cache the encoding under that
+    name, so /model swaps don't drift to the import-time MODEL_NAME default."""
+    from agent.tokens import _encoding_cache
+
+    # Clear cache to start clean
+    _encoding_cache.clear()
+    count_tokens([{"role": "user", "content": "x"}], model_name="gpt-4")
+    assert "gpt-4" in _encoding_cache
+    count_tokens([{"role": "user", "content": "x"}], model_name="gpt-4o")
+    assert "gpt-4o" in _encoding_cache
+    # Two distinct cached encodings
+    assert _encoding_cache["gpt-4"] is not _encoding_cache["gpt-4o"]
