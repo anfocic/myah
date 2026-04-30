@@ -34,7 +34,7 @@ from agent.context import (
 from agent.loop import _debug_dump_messages, _run_tools_parallel, run_agent
 from agent.status import LOG_FILE, log_response, status_line
 from agent.system_prompt import build_system_prompt
-from agent.tokens import estimate_tokens, truncate_tool_result
+from agent.tokens import count_tokens, estimate_tokens, truncate_tool_result
 
 __all__ = [
     "READ_ONLY_TOOLS",
@@ -46,6 +46,7 @@ __all__ = [
     "apply_summary",
     "build_system_prompt",
     "compact_history",
+    "count_tokens",
     "estimate_tokens",
     "log_response",
     "microcompact",

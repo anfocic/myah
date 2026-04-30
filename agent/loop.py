@@ -23,7 +23,7 @@ from agent import READ_ONLY_TOOLS
 from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response
 from agent.system_prompt import build_system_prompt
-from agent.tokens import estimate_tokens, truncate_tool_result
+from agent.tokens import count_tokens, truncate_tool_result
 from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW
 from display import StreamingMarkdown
 from providers import Provider, ProviderError, Usage, get_active_provider
@@ -267,7 +267,10 @@ def run_agent(
     )
 
     start = time.time()
-    ctx_used = estimate_tokens(messages)
+    # Eagerly fetch the provider so token counting uses the live model name
+    # (encoding cache is keyed by model; /model swaps must not drift).
+    provider = get_active_provider()
+    ctx_used = count_tokens(messages, tools=tools, model_name=provider.model)
     # Accumulated across every iteration of the while-loop so callers (evals,
     # /debug, subagent reporters) can see the reasoning from every turn in
     # a multi-tool trajectory, not only the final answer's reasoning.
@@ -298,7 +301,7 @@ def run_agent(
             ctx_before = ctx_used
             n_elided = microcompact(messages)
             if n_elided:
-                ctx_used = estimate_tokens(messages)
+                ctx_used = count_tokens(messages, tools=tools, model_name=provider.model)
                 if console:
                     threshold = int(MICROCOMPACT_CTX_THRESHOLD * NUM_CTX)
                     console.print(
@@ -311,7 +314,6 @@ def run_agent(
         if debug and console:
             _debug_dump_messages(console, messages)
 
-        provider = get_active_provider()
         turn = _stream_provider_turn(
             provider, messages, tools, NUM_CTX,
             console=console, start_time=start,
@@ -347,7 +349,7 @@ def run_agent(
             reasoning=turn.reasoning,
         )
 
-        ctx_used = (turn.usage.prompt_tokens if turn.usage else None) or estimate_tokens(messages)
+        ctx_used = (turn.usage.prompt_tokens if turn.usage else None) or count_tokens(messages, tools=tools, model_name=provider.model)
 
         if turn.tool_calls:
             # Spinning guard: if the model keeps asking for the same

@@ -11,8 +11,8 @@ under budget:
 
 Each layer catches a different failure mode; per CONCEPTS §35 you only
 notice you need the next one when the previous starts to leak."""
-from agent.tokens import estimate_tokens
-from config import NUM_CTX
+from agent.tokens import count_tokens
+from config import NUM_CTX, RESERVED_COMPLETION_TOKENS
 from providers import ProviderError, get_active_provider
 
 
@@ -21,13 +21,18 @@ def trim_history(
     high: float = 0.8, target: float = 0.5,
 ) -> tuple[list, list]:
     """If ctx is over `high`, drop oldest user/assistant pairs until history
-    fits under `target`. Returns (new_history, dropped_messages)."""
+    fits under `target`. Returns (new_history, dropped_messages).
+
+    The effective target is reduced by RESERVED_COMPLETION_TOKENS so the
+    model always has headroom to generate a response."""
     if ctx_used <= high * num_ctx:
         return history, []
 
-    target_tokens = int(target * num_ctx)
+    target_tokens = int(target * num_ctx) - RESERVED_COMPLETION_TOKENS
+    if target_tokens < 0:
+        target_tokens = 0
     dropped: list = []
-    while len(history) >= 2 and estimate_tokens(history) > target_tokens:
+    while len(history) >= 2 and count_tokens(history) > target_tokens:
         dropped.extend(history[:2])
         history = history[2:]
     return history, dropped
@@ -102,8 +107,38 @@ def microcompact(messages: list, keep_recent: int = MICROCOMPACT_KEEP_RECENT) ->
     return n
 
 
+def _extractive_summary(dropped: list) -> str:
+    """Build a cheap local summary from dropped turns when the LLM call
+    fails. Captures first sentence of each user message and deduplicated
+    tool names so context isn't completely lost."""
+    user_snippets: list[str] = []
+    tool_names: set[str] = set()
+    for m in dropped:
+        if m.get("role") == "user":
+            text = m.get("content", "")
+            # First sentence: up to first period, or first 80 chars.
+            sentence = text.split(".")[0].strip()
+            if len(sentence) > 80:
+                sentence = sentence[:77] + "..."
+            if sentence:
+                user_snippets.append(sentence)
+        elif m.get("role") == "assistant":
+            for tc in m.get("tool_calls", []):
+                name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                if name:
+                    tool_names.add(name)
+    parts: list[str] = []
+    if user_snippets:
+        parts.append("User asked about " + "; ".join(user_snippets) + ".")
+    if tool_names:
+        parts.append("Tools used: " + ", ".join(sorted(tool_names)) + ".")
+    return " ".join(parts)
+
+
 def summarize_dropped(dropped: list) -> str:
-    """Compress dropped turns into a terse note via the active provider."""
+    """Compress dropped turns into a terse note via the active provider.
+    Falls back to an extractive local summary on ProviderError so context
+    is never completely lost."""
     if not dropped:
         return ""
     transcript = "\n".join(
@@ -121,5 +156,5 @@ def summarize_dropped(dropped: list) -> str:
             num_ctx=NUM_CTX,
         )
     except ProviderError:
-        return ""
+        return _extractive_summary(dropped)
     return content
