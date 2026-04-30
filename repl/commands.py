@@ -126,7 +126,10 @@ def _next_turn_messages(state: State) -> list[dict]:
     start of a new turn: system prompt + durable history. No synthetic
     user turn — /context reports what's already committed, not what the
     next user input would add."""
-    sys_prompt = build_system_prompt(plan_mode=state.get("plan_mode", False))
+    sys_prompt = build_system_prompt(
+        plan_mode=state.get("plan_mode", False),
+        cwd=state.get("cwd"),
+    )
     return [{"role": "system", "content": sys_prompt}] + list(state["history"])
 
 
@@ -486,8 +489,32 @@ def cmd_model(state: State, arg: str = "") -> None:
     console.print(f"[dim]↳ switched to {model} \\[{provider_name}] (takes effect next turn)[/dim]")
 
 
+def cmd_cd(state: State, arg: str = "") -> None:
+    """Change the harness working directory. No arg → print current directory."""
+    import os
+
+    path = arg.strip()
+    if not path:
+        console.print(state["cwd"])
+        return
+
+    current = state["cwd"]
+    resolved = os.path.realpath(os.path.join(current, path))
+
+    if not os.path.exists(resolved):
+        console.print(f"[red]cd: {path}: No such file or directory[/red]")
+        return
+    if not os.path.isdir(resolved):
+        console.print(f"[red]cd: {path}: Not a directory[/red]")
+        return
+
+    state["cwd"] = resolved
+    console.print(state["cwd"])
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
+    "/cd": (cmd_cd, "change the harness working directory (or print it with no argument)"),
     "/config": (cmd_config, "show/reload/edit configuration (reload | path | edit)"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
     "/context": (cmd_context, "show context window usage + harness info"),

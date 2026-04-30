@@ -125,10 +125,33 @@ In plan mode, only read-only tools run; mutating tools are short-circuited so th
 
 ## Adding a Tool
 
-1. Implement the function in `tools/`
-2. Add its OpenAI-style schema to `repl/tool_registry.py`
-3. Add a branch in `make_execute_tool()`
+1. Implement the function in `tools/<module>.py`
+2. Add an adapter + `register()` call at the bottom of that same file:
+
+```python
+from tools.spec import register
+
+def _my_tool_adapter(args: dict, cwd: str):
+    # Resolve paths against cwd, apply defaults, then call the tool.
+    from tools.cd import resolve_against
+    return my_tool(resolve_against(cwd, args["path"]))
+
+register(
+    name="my_tool",
+    description="What the tool does...",
+    adapter=_my_tool_adapter,
+    properties={
+        "path": {"type": "string", "description": "File path"},
+    },
+    required=["path"],
+    read_only=True,   # or False for mutating tools
+)
+```
+
+3. If the tool needs `state` (e.g. `harness_info`) or a closure (`spawn_subagent`),
+   keep it as a special case in `repl/tool_registry.py` instead.
 4. Decide whether it should be read-only or permission-gated / plan-mode-blocked
+   (`agent/__init__.py` -> `READ_ONLY_TOOLS`)
 5. Add or extend tests under `tests/`
 
 The schema shape follows OpenAI function calling:
@@ -161,3 +184,15 @@ MYAH_PROVIDER=openai OPENAI_API_KEY=... python main.py
 - `logs/agent.jsonl` records per-turn traces and surfaced usage
 - `tests/test_integration.py` uses a scripted fake provider to exercise the full loop without a live backend
 - For provider-specific failures, inspect the adapter in `providers/` before assuming the loop is at fault
+
+## Decisions (ADR)
+
+Architectural decisions are documented as numbered ADR files in `vault/wiki/decisions/`. Template: `vault/templates/adr.md`. Index: `vault/wiki/decisions/README.md`.
+
+**When to write an ADR:** any non-obvious architectural choice with tradeoffs. If it goes in the session file as a decision, it belongs in `vault/wiki/decisions/`.
+
+**Format:** `NNNN-slug.md` — append the next number, zero-padded to 4 digits. Each file has frontmatter (`status: accepted|proposed|deprecated|superseded`, `supersedes`, `superseded_by`) and three sections: **Context** (forces at play), **Decision** (what we chose, present tense), **Consequences** (what becomes easier/harder).
+
+**Status lifecycle:** `proposed` → `accepted` → `deprecated` / `superseded`. When superseding, set `superseded_by` on the old ADR and `supersedes` on the new one. Cross-reference related ADRs with Obsidian-style `[[NNNN-slug]]` links.
+
+**Tool support:** use `vault_search` to find prior decisions before implementing new features. The vault lives at `vault/` (sibling to this file) and contains the full ADR index plus patterns, gotchas, and plans.

@@ -3,6 +3,7 @@ import os
 import tempfile
 
 from security import is_within_cwd, refuse_outside_cwd
+from tools.spec import register
 
 DEFAULT_READ_LINES = 1000
 MAX_LINE_CHARS = 500
@@ -132,3 +133,88 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
     replaced = count if replace_all else 1
     return f"Edited {path}: {replaced} replacement(s)"
+
+
+# ---------------------------------------------------------------------------
+# Adapters — bridge from model args (relative paths, strings) to tool fns.
+# Each adapter receives the raw args dict and the harness cwd, then resolves
+# paths and supplies defaults exactly as the old monolithic dispatcher did.
+# ---------------------------------------------------------------------------
+
+
+def _read_file_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    return read_file(
+        resolve_against(cwd, args["path"]),
+        int(args.get("offset", 1)),
+        int(args["limit"]) if "limit" in args else None,
+    )
+
+
+register(
+    name="read_file",
+    description="Read a file. Returns the contents with line numbers prepended (cat -n style) so you can reference specific lines. By default returns the first 1000 lines; use offset and limit to paginate longer files.",
+    adapter=_read_file_adapter,
+    properties={
+        "path": {"type": "string", "description": "The file path to read"},
+        "offset": {
+            "type": "integer",
+            "description": "1-indexed line to start from. Defaults to 1.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max number of lines to return. Defaults to 1000.",
+        },
+    },
+    required=["path"],
+    read_only=True,
+)
+
+
+def _write_file_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    return write_file(resolve_against(cwd, args["path"]), args["content"])
+
+
+register(
+    name="write_file",
+    description="Writes content to a file at the given path. Overwrites the whole file — prefer edit_file for surgical changes.",
+    adapter=_write_file_adapter,
+    properties={
+        "path": {"type": "string", "description": "The file path to write to"},
+        "content": {"type": "string", "description": "The content to write"},
+    },
+    required=["path", "content"],
+    read_only=False,
+)
+
+
+def _edit_file_adapter(args: dict, cwd: str):
+    from tools.cd import resolve_against
+    return edit_file(
+        resolve_against(cwd, args["path"]),
+        args["old_string"],
+        args["new_string"],
+        bool(args.get("replace_all", False)),
+    )
+
+
+register(
+    name="edit_file",
+    description="Surgically replace a string in a file. old_string must uniquely identify the target unless replace_all is true.",
+    adapter=_edit_file_adapter,
+    properties={
+        "path": {"type": "string", "description": "The file path to edit"},
+        "old_string": {
+            "type": "string",
+            "description": "Exact text to find. Must be unique in the file unless replace_all is true.",
+        },
+        "new_string": {"type": "string", "description": "Replacement text"},
+        "replace_all": {
+            "type": "boolean",
+            "description": "Replace every occurrence instead of requiring uniqueness",
+        },
+    },
+    required=["path", "old_string", "new_string"],
+    read_only=False,
+)

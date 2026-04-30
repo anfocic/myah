@@ -25,7 +25,7 @@ def test_supported_providers_matches_factory_branches():
     parser silently stops recognizing that prefix. This test locks them
     together."""
     assert SUPPORTED_PROVIDERS == {
-        "ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode",
+        "ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode", "openrouter",
     }
 
 
@@ -67,6 +67,16 @@ def test_build_opencode_uses_opencode_host_and_api_key():
     assert p.model == "opencode/default"
     assert p._base == "https://api.opencode.dev/v1"
     assert p._headers.get("Authorization") == "Bearer oc-test"
+
+
+def test_build_openrouter_uses_openrouter_host_and_api_key():
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-test"}, clear=False):
+        p = build_provider("openrouter", "nousresearch/hermes-3-llama-3.1-405b")
+    assert isinstance(p, OpenAICompatProvider)
+    assert p.name == "openrouter"
+    assert p.model == "nousresearch/hermes-3-llama-3.1-405b"
+    assert p._base == "https://openrouter.ai/api/v1"
+    assert p._headers.get("Authorization") == "Bearer or-test"
 
 
 def test_build_anthropic_requires_api_key():

@@ -19,7 +19,8 @@ from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 _OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
-_OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.dev/v1")
+_OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1")
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Reasonable defaults for `/model <provider-name>` with no model specified
 # and for the startup path when MYAH_PROVIDER selects one of these without
@@ -29,7 +30,8 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-chat",
     "google": "gemma-4-e4b",
-    "opencode": "opencode/default",
+    "opencode": "kimi-k2.6",
+    "openrouter": "nousresearch/hermes-3-llama-3.1-405b",
 }
 
 
@@ -38,12 +40,13 @@ def build_provider(name: str, model: str) -> Provider:
     from config/env — only the model name changes per call.
 
     Supported names: `ollama`, `openai-compat`, `openai`, `anthropic`,
-    `deepseek`. `openai-compat` is the generic adapter (local llama.cpp /
-    LM Studio / vLLM / OpenRouter); `openai` and `deepseek` are presets
-    that reuse the same adapter but default to the first-party hosts and
-    each provider's dedicated API-key env var. `anthropic` has its own
-    native adapter because the Messages API differs in message shape,
-    streaming events, and tool schema."""
+    `deepseek`, `google`, `opencode`, `openrouter`. `openai-compat` is the
+    generic adapter (local llama.cpp / LM Studio / vLLM); `openai`,
+    `deepseek`, `google`, `opencode`, and `openrouter` are presets that
+    reuse the same adapter but default to their own hosts and dedicated
+    API-key env vars. `anthropic` has its own native adapter because the
+    Messages API differs in message shape, streaming events, and tool
+    schema."""
     load_dotenv()
 
     if name == "ollama":
@@ -135,14 +138,27 @@ def build_provider(name: str, model: str) -> Provider:
         provider.name = "opencode"
         return provider
 
+    if name == "openrouter":
+        # OpenRouter exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var.
+        from .openai_compat import OpenAICompatProvider
+
+        provider = OpenAICompatProvider(
+            model=model,
+            base_url=os.environ.get("OPENROUTER_BASE_URL", _OPENROUTER_BASE_URL),
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        )
+        provider.name = "openrouter"
+        return provider
+
     raise ValueError(
         f"unknown provider: {name!r} "
-        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek, google, opencode)"
+        "(expected one of: ollama, openai-compat, openai, anthropic, deepseek, google, opencode, openrouter)"
     )
 
 
 SUPPORTED_PROVIDERS = frozenset(
-    {"ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode"}
+    {"ollama", "openai-compat", "openai", "anthropic", "deepseek", "google", "opencode", "openrouter"}
 )
 
 
@@ -193,6 +209,12 @@ def get_provider() -> Provider:
         return build_provider(
             "opencode",
             os.environ.get("OPENCODE_MODEL", _DEFAULT_MODELS["opencode"]),
+        )
+
+    if MODEL_PROVIDER == "openrouter":
+        return build_provider(
+            "openrouter",
+            os.environ.get("OPENROUTER_MODEL", _DEFAULT_MODELS["openrouter"]),
         )
 
     raise ValueError(

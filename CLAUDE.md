@@ -4,9 +4,11 @@
 
 A hand-rolled agent harness built for **learning how agent harnesses work**. The goal is to understand — by building — what Claude Code, Codex, Cursor, etc. do internally: tool calling, the chat/tool/chat cycle, history management, permissioning, and context budgeting.
 
-Do NOT use emojis in responses.
+AI concepts (the agent loop, context trimming, tool-call lifecycle, provider contracts) should remain clearly visible and well-explained — pedagogy matters.
 
-This is not meant to be production software. When explaining or suggesting changes, prefer clarity and pedagogy over cleverness. Show the mechanism, don't hide it behind abstractions.
+Programming patterns in the implementation, however, should tend toward clean, pragmatic solutions. This codebase will grow; prefer maintainable structure over "showing the mechanism" when the mechanism is already clear. Refactor when duplication appears, use standard libraries, and keep modules focused.
+
+Do NOT use emojis in responses.
 
 **Stack:** Python · `prompt_toolkit` + `rich` · provider adapters (Ollama by default; also OpenAI-compatible, OpenAI, Anthropic, DeepSeek) · local tools (`read_file`, `edit_file`, `glob`, `grep`, `bash`, `git_checkout`, `spawn_subagent`, etc.)
 
@@ -163,3 +165,24 @@ MYAH_PROVIDER=openai OPENAI_API_KEY=... python main.py
 - `logs/agent.jsonl` records per-turn traces and surfaced usage
 - `tests/test_integration.py` uses a scripted fake provider to exercise the full loop without a live backend
 - For provider-specific failures, inspect the adapter in `providers/` before assuming the loop is at fault
+
+## Tooling Philosophy
+
+The harness will grow new capabilities over time. Prefer incremental, pragmatic additions that keep the mechanism visible:
+
+- **Structured tool results first** — run linters with `--output-format=json` and return parsed diagnostics instead of raw stdout. This is cheap and composable.
+- **AST-aware editing next** — validate `edit_file` replacements with tree-sitter before applying, or support line-range reads (`offset` / `limit`). Safer than pure string replacement without the heft of a full language server.
+- **Symbol indexing lightweight** — `ctags` or `ripgrep` with word boundaries gives the model fast lookup without per-language server lifecycle management.
+- **LSP is a future advanced module** — LSP adds real value for `references`, `rename`, `hover`, and `diagnostics`, but it also hides mechanism behind JSON-RPC, file synchronization, and server lifecycle. Add it only after the simpler layers are in place and the educational foundation is solid.
+
+## Decisions (ADR)
+
+Architectural decisions are documented as numbered ADR files in `vault/wiki/decisions/`. Template: `vault/templates/adr.md`. Index: `vault/wiki/decisions/README.md`.
+
+**When to write an ADR:** any non-obvious architectural choice with tradeoffs. If it goes in the session file as a decision, it belongs in `vault/wiki/decisions/`.
+
+**Format:** `NNNN-slug.md` — append the next number, zero-padded to 4 digits. Each file has frontmatter (`status: accepted|proposed|deprecated|superseded`, `supersedes`, `superseded_by`) and three sections: **Context** (forces at play), **Decision** (what we chose, present tense), **Consequences** (what becomes easier/harder).
+
+**Status lifecycle:** `proposed` → `accepted` → `deprecated` / `superseded`. When superseding, set `superseded_by` on the old ADR and `supersedes` on the new one. Cross-reference related ADRs with Obsidian-style `[[NNNN-slug]]` links.
+
+**Tool support:** use `vault_search` to find prior decisions before implementing new features. The vault lives at `vault/` (sibling to this file) and contains the full ADR index plus patterns, gotchas, and plans.

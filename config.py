@@ -77,7 +77,12 @@ elif MODEL_PROVIDER == "google":
 elif MODEL_PROVIDER == "opencode":
     MODEL_NAME = env_override(
         "OPENCODE_MODEL", "provider.models.opencode",
-        _models_cfg.get("opencode", "opencode/default"),
+        _models_cfg.get("opencode", "kimi-k2.6"),
+    )
+elif MODEL_PROVIDER == "openrouter":
+    MODEL_NAME = env_override(
+        "OPENROUTER_MODEL", "provider.models.openrouter",
+        _models_cfg.get("openrouter", "nousresearch/hermes-3-llama-3.1-405b"),
     )
 else:
     MODEL_NAME = OLLAMA_MODEL  # fall back; the factory will raise on first use

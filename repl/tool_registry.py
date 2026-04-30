@@ -6,52 +6,56 @@ REPL state so the `harness_info` tool can report live context — this is
 the lexical-capture trick from CONCEPTS §23 that keeps `agent.py` unaware
 of state shape.
 
-Adding a new tool is three edits in this file: import the function, add a
-schema entry, add an `execute_tool` branch. CONCEPTS §36 argues for
-narrow named tools over generic shell (for small models), which is why
-`git_checkout` exists even though `bash` could do the same job."""
+Tool registration now lives in each tool module (see `tools/spec.py`).
+Importing a submodule calls `register()`, populating a shared registry.
+Only four tools remain special-cased here because they need REPL state or
+closure access that generic adapters cannot provide:
+
+- `pwd` / `cd`    — read/write state["cwd"]
+- `harness_info`  — needs the live state dict + tool name list
+- `spawn_subagent` — needs the full execute_tool closure + permission_check
+"""
+
 from typing import Any
 
+# Import every tool submodule so their `register()` calls populate the
+# shared registry. The side-effect is intentional and idempotent.
+import tools.bash  # noqa: F401
+import tools.files  # noqa: F401
+import tools.git  # noqa: F401
+import tools.search  # noqa: F401
+import tools.utils  # noqa: F401
+import tools.vault  # noqa: F401
+import tools.web_search  # noqa: F401
 from repl.console import console
 from repl.state import State
-from tools.bash import bash as run_bash
-from tools.files import edit_file, read_file, write_file
-from tools.git import git_checkout
+from tools.cd import cd, pwd
 from tools.harness import harness_info
-from tools.search import glob, grep
+from tools.spec import get_registry
 from tools.subagent import spawn_subagent
-from tools.utils import get_current_time
-from tools.web_search import web_search
 
-# Tool schemas are nested dicts (OpenAI function-calling format). The
-# explicit `list[dict[str, Any]]` annotation keeps mypy from inferring a
-# `Collection[str]` value type from the first entry, which blocks the
-# nested indexing in the TOOL_NAMES comprehension below.
-tools: list[dict[str, Any]] = [
+# Special-case schemas for tools that need state/closure access and therefore
+# cannot be registered via the generic adapter pattern in their home modules.
+_SPECIAL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "get_current_time",
-            "description": "Returns the current date and time",
+            "name": "pwd",
+            "description": "Print the harness current working directory. Returns the absolute path as a string.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "read_file",
-            "description": "Read a file. Returns the contents with line numbers prepended (cat -n style) so you can reference specific lines. By default returns the first 1000 lines; use offset and limit to paginate longer files.",
+            "name": "cd",
+            "description": "Change the harness working directory. Resolves <path> relative to the current harness cwd. Use .. for parent. Refuses to escape the cwd guard. Returns the new directory path, or an error message.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file path to read"},
-                    "offset": {
-                        "type": "integer",
-                        "description": "1-indexed line to start from. Defaults to 1.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of lines to return. Defaults to 1000.",
+                    "path": {
+                        "type": "string",
+                        "description": "The directory path to change to. Supports relative paths (.., ../sibling) and absolute paths.",
                     },
                 },
                 "required": ["path"],
@@ -61,169 +65,9 @@ tools: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "write_file",
-            "description": "Writes content to a file at the given path. Overwrites the whole file — prefer edit_file for surgical changes.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The file path to write to",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit_file",
-            "description": "Surgically replace a string in a file. old_string must uniquely identify the target unless replace_all is true.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "The file path to edit"},
-                    "old_string": {
-                        "type": "string",
-                        "description": "Exact text to find. Must be unique in the file unless replace_all is true.",
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "Replacement text",
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Replace every occurrence instead of requiring uniqueness",
-                    },
-                },
-                "required": ["path", "old_string", "new_string"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "glob",
-            "description": "Find files by name or glob pattern, recursively. Use this to resolve a bare filename (e.g. 'search.py') to its full path before reading or editing. Accepts 'search.py', '*.py', or '**/*.md'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Filename or glob pattern to match",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search from. Defaults to current working directory.",
-                    },
-                },
-                "required": ["pattern"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep",
-            "description": "Regex search across files under a path. Returns matching file paths by default, or path:line:text when output_mode is 'content'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Python regex to search for",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory or file to search. Defaults to the current working directory.",
-                    },
-                    "glob": {
-                        "type": "string",
-                        "description": "Optional glob filter like '*.py' or '**/*.md'",
-                    },
-                    "output_mode": {
-                        "type": "string",
-                        "description": "'files_with_matches' (default) or 'content'",
-                    },
-                },
-                "required": ["pattern"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the live public web. Use this for current events, recent facts, or external information that may not be in the model's training data.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The web search query to run.",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "How many results to return (1-20, default 5).",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "bash",
-            "description": "Run a shell command. Use for git, running tests, builds, package management, or any shell-only operation. Returns stdout, stderr, and exit code. Requires user permission for each call.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to run",
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Working directory. Defaults to the REPL's current directory.",
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Timeout in seconds. Defaults to 30.",
-                    },
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "harness_info",
             "description": "Introspect the harness you are running in: current model, context window size (num_ctx), context used in the previous turn, number of conversation turns in history, working directory, git branch, today's date, and the list of tools available to you. Call this when the user asks about the harness, model, or context usage, or when you need to decide whether to summarize / shorten your reply because ctx is getting tight.",
             "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "git_checkout",
-            "description": "Switch to a git branch. Equivalent to `git checkout <branch>`. ALWAYS use this whenever the user asks to switch, check out, or move to a branch — never simulate the action in text and never fabricate output.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "branch": {
-                        "type": "string",
-                        "description": "Branch name to switch to (e.g. 'main', 'feat/foo').",
-                    },
-                },
-                "required": ["branch"],
-            },
         },
     },
     {
@@ -259,6 +103,12 @@ tools: list[dict[str, Any]] = [
     },
 ]
 
+_registry = get_registry()
+
+# Build the full schema list seen by the model: generic registry first,
+# then the special cases. The order only matters for readability.
+tools: list[dict[str, Any]] = [t.schema for t in _registry.values()] + _SPECIAL_SCHEMAS
+
 TOOL_NAMES = [t["function"]["name"] for t in tools]
 
 
@@ -276,48 +126,26 @@ def make_execute_tool(state: State, permission_check=None):
         # Args come from the model, which occasionally omits required keys.
         # Return the error as a tool result so the model can recover instead of
         # crashing the REPL.
+        # Path-resolution rule: every model-supplied path arg below goes through
+        # resolve_against(cwd, ...) before reaching the tool, so the model's
+        # `cd` movement is honored uniformly. Tools themselves stay
+        # cwd-state-ignorant; this dispatcher is the single bridge.
+        # state.get() so test fixtures that hand-construct a State (instead of
+        # using new_state()) don't crash.
+        import os as _os
+
+        cwd = state.get("cwd") or _os.getcwd()
         try:
-            if name == "get_current_time":
-                return get_current_time()
-            elif name == "read_file":
-                return read_file(
+            if name == "pwd":
+                return pwd(lambda: cwd)
+            elif name == "cd":
+                return cd(
+                    lambda: cwd,
+                    lambda new_cwd: state.__setitem__("cwd", new_cwd),
                     args["path"],
-                    int(args.get("offset", 1)),
-                    int(args["limit"]) if "limit" in args else None,
-                )
-            elif name == "write_file":
-                return write_file(args["path"], args["content"])
-            elif name == "edit_file":
-                return edit_file(
-                    args["path"],
-                    args["old_string"],
-                    args["new_string"],
-                    bool(args.get("replace_all", False)),
-                )
-            elif name == "glob":
-                return glob(args["pattern"], args.get("path", "."))
-            elif name == "grep":
-                return grep(
-                    args["pattern"],
-                    args.get("path", "."),
-                    args.get("glob"),
-                    args.get("output_mode", "files_with_matches"),
-                )
-            elif name == "web_search":
-                return web_search(
-                    args["query"],
-                    int(args.get("max_results", 5)),
-                )
-            elif name == "bash":
-                return run_bash(
-                    args["command"],
-                    args.get("cwd", "."),
-                    int(args.get("timeout", 30)),
                 )
             elif name == "harness_info":
                 return harness_info(state, TOOL_NAMES)
-            elif name == "git_checkout":
-                return git_checkout(args["branch"])
             elif name == "spawn_subagent":
                 return spawn_subagent(
                     task=args["task"],
@@ -326,8 +154,13 @@ def make_execute_tool(state: State, permission_check=None):
                     permission_check=permission_check,
                     console=console,
                     plan_mode=bool(state.get("plan_mode", False)),
+                    cwd=cwd,
                 )
-            return "Tool not found"
+
+            tool = _registry.get(name)
+            if tool is None:
+                return "Tool not found"
+            return tool.adapter(args, cwd)
         except KeyError as e:
             return f"Missing required argument: {e}"
 

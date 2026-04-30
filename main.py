@@ -128,6 +128,7 @@ def main() -> None:
                     on_tool_start=on_tool_start,
                     on_tool_end=on_tool_end,
                     debug=state["debug"],
+                    cwd=state["cwd"],
                 )
                 ctx_before_trim = state["ctx_used"]
                 # tools + model_name keep the trim loop's count aligned

@@ -97,9 +97,7 @@ class OpenAICompatProvider(Provider):
         try:
             import tiktoken
         except ImportError as e:
-            raise ProviderError(
-                "tiktoken not installed; run `pip install tiktoken`"
-            ) from e
+            raise ProviderError("tiktoken not installed; run `pip install tiktoken`") from e
         try:
             enc = tiktoken.encoding_for_model(self.model)
         except KeyError:
@@ -237,7 +235,7 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
     for line in lines:
         if not line or not line.startswith("data:"):
             continue
-        data = line[len("data:"):].strip()
+        data = line[len("data:") :].strip()
         if data == "[DONE]":
             break
         try:
@@ -284,19 +282,11 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
                 try:
                     arguments = json.loads(raw)
                 except json.JSONDecodeError as e:
-                    raise ProviderError(
-                        f"bad streamed tool-call JSON: {e}: {raw[:200]}"
-                    ) from e
+                    raise ProviderError(f"bad streamed tool-call JSON: {e}: {raw[:200]}") from e
                 if not isinstance(arguments, dict):
-                    raise ProviderError(
-                        "bad streamed tool-call JSON: expected an object"
-                    )
-                parsed_tool_calls.append(
-                    ToolCall(name=slot["name"], arguments=arguments)
-                )
-            yield StreamChunk(
-                tool_calls=parsed_tool_calls
-            )
+                    raise ProviderError("bad streamed tool-call JSON: expected an object")
+                parsed_tool_calls.append(ToolCall(name=slot["name"], arguments=arguments))
+            yield StreamChunk(tool_calls=parsed_tool_calls)
             tool_buf.clear()
 
     yield StreamChunk(
@@ -340,30 +330,39 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
             # for each leftover so the contract "every tool_call has a tool
             # result" holds before we append the new assistant block.
             for orphan_id in pending_ids:
-                out.append({
-                    "role": "tool",
-                    "tool_call_id": orphan_id,
-                    "content": "[no tool result — turn truncated]",
-                })
+                out.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": orphan_id,
+                        "content": "[no tool result — turn truncated]",
+                    }
+                )
             ids_for_this = []
             oai_tool_calls = []
             for tc in msg["tool_calls"]:
                 tid = f"call_{counter}"
                 counter += 1
                 ids_for_this.append(tid)
-                oai_tool_calls.append({
-                    "id": tid,
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": json.dumps(tc["arguments"]),
-                    },
-                })
-            out.append({
+                oai_tool_calls.append(
+                    {
+                        "id": tid,
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["arguments"]),
+                        },
+                    }
+                )
+            assistant_msg = {
                 "role": "assistant",
                 "content": msg.get("content") or "",
                 "tool_calls": oai_tool_calls,
-            })
+                # Moonshot AI (kimi-k2.6) requires reasoning_content on every
+                # assistant message with tool_calls when thinking is enabled.
+                # Empty string is fine; missing key triggers a 400.
+                "reasoning_content": msg.get("reasoning_content") or "",
+            }
+            out.append(assistant_msg)
             pending_ids = ids_for_this
         elif role == "tool":
             if pending_ids:
@@ -371,12 +370,20 @@ def _translate_messages(messages: list[dict]) -> list[dict]:
             else:
                 tid = f"call_{counter}"
                 counter += 1
-            out.append({
-                "role": "tool",
-                "tool_call_id": tid,
-                "content": msg.get("content") or "",
-            })
+            out.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": msg.get("content") or "",
+                }
+            )
         else:
-            out.append({k: v for k, v in msg.items() if k in ("role", "content", "name")})
+            out.append(
+                {
+                    k: v
+                    for k, v in msg.items()
+                    if k in ("role", "content", "name", "reasoning_content")
+                }
+            )
 
     return out

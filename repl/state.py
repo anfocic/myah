@@ -2,7 +2,9 @@
 TypedDict is a type-checker-only construct, so editors catch typos like
 `state["plaan_mode"]` without changing any access shape. `_retry_input`
 is transient: cmd_retry sets it, the REPL loop pops it."""
+import os
 from collections import deque
+from pathlib import Path
 from typing import NotRequired, TypedDict
 
 # Cap on the in-memory snapshot stack used by /rewind. Each snapshot is a
@@ -17,6 +19,10 @@ class State(TypedDict):
     plan_mode: bool
     debug: bool
     snapshots: deque
+    # Harness's tracked working directory. Kept separate from os.getcwd()
+    # so the security guard (is_within_cwd) is always anchored to the
+    # original process cwd, while the model can navigate freely within it.
+    cwd: str
     _retry_input: NotRequired[str]
     # Per-turn metrics captured at end of each run_agent call. `/stats`
     # renders these on demand so the REPL doesn't have to print a footer
@@ -33,4 +39,5 @@ def new_state() -> State:
         "plan_mode": False,
         "debug": False,
         "snapshots": deque(maxlen=REWIND_MAX_SNAPSHOTS),
+        "cwd": os.getcwd(),
     }

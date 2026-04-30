@@ -32,6 +32,7 @@ DEFAULTS: dict = {
             "deepseek": "deepseek-chat",
             "google": "gemma-4-e4b",
             "opencode": "opencode/default",
+            "openrouter": "nousresearch/hermes-3-llama-3.1-405b",
         },
     },
     "context": {
