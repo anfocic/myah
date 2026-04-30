@@ -10,7 +10,7 @@ from rich.panel import Panel
 from agent import apply_summary, compact_history
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens
-from config import NUM_CTX, get_context_size
+from config import get_context_size
 from providers import (
     SUPPORTED_PROVIDERS,
     ProviderError,

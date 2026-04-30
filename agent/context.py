@@ -12,7 +12,7 @@ under budget:
 Each layer catches a different failure mode; per CONCEPTS §35 you only
 notice you need the next one when the previous starts to leak."""
 from agent.tokens import count_tokens
-from config import NUM_CTX, RESERVED_COMPLETION_TOKENS, get_context_size
+from config import RESERVED_COMPLETION_TOKENS, get_context_size
 from providers import ProviderError, get_active_provider
 
 

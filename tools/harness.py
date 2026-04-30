@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from config import NUM_CTX, get_context_size
+from config import get_context_size
 from providers import get_active_provider
 
 

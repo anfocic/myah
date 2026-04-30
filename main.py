@@ -13,7 +13,7 @@ import time
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from agent import apply_summary, run_agent, trim_history
-from config import NUM_CTX, get_context_size
+from config import get_context_size
 from display import on_tool_end, on_tool_start
 from permissions import check_permission
 from providers import get_active_provider
