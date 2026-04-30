@@ -19,12 +19,17 @@ from providers import ProviderError, get_active_provider
 def trim_history(
     history: list, ctx_used: int, num_ctx: int,
     high: float = 0.8, target: float = 0.5,
+    tools: list | None = None, model_name: str | None = None,
 ) -> tuple[list, list]:
     """If ctx is over `high`, drop oldest user/assistant pairs until history
     fits under `target`. Returns (new_history, dropped_messages).
 
     The effective target is reduced by RESERVED_COMPLETION_TOKENS so the
-    model always has headroom to generate a response."""
+    model always has headroom to generate a response.
+
+    Pass `tools` and `model_name` so the inner count matches what the
+    gate-check `ctx_used` measured — without them, the loop undercounts
+    by the tool-schema budget (~3-5K tokens) and stops too early."""
     if ctx_used <= high * num_ctx:
         return history, []
 
@@ -32,7 +37,7 @@ def trim_history(
     if target_tokens < 0:
         target_tokens = 0
     dropped: list = []
-    while len(history) >= 2 and count_tokens(history) > target_tokens:
+    while len(history) >= 2 and count_tokens(history, tools=tools, model_name=model_name) > target_tokens:
         dropped.extend(history[:2])
         history = history[2:]
     return history, dropped
@@ -109,30 +114,26 @@ def microcompact(messages: list, keep_recent: int = MICROCOMPACT_KEEP_RECENT) ->
 
 def _extractive_summary(dropped: list) -> str:
     """Build a cheap local summary from dropped turns when the LLM call
-    fails. Captures first sentence of each user message and deduplicated
-    tool names so context isn't completely lost."""
+    fails. Captures first sentence of each user message so context isn't
+    completely lost.
+
+    History only persists `{role, content}` (tool_calls are intra-turn
+    scratch, never appended), so there's no point trying to extract tool
+    names from `dropped` — they were never there to begin with."""
     user_snippets: list[str] = []
-    tool_names: set[str] = set()
     for m in dropped:
-        if m.get("role") == "user":
-            text = m.get("content", "")
-            # First sentence: up to first period, or first 80 chars.
-            sentence = text.split(".")[0].strip()
-            if len(sentence) > 80:
-                sentence = sentence[:77] + "..."
-            if sentence:
-                user_snippets.append(sentence)
-        elif m.get("role") == "assistant":
-            for tc in m.get("tool_calls", []):
-                name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                if name:
-                    tool_names.add(name)
-    parts: list[str] = []
-    if user_snippets:
-        parts.append("User asked about " + "; ".join(user_snippets) + ".")
-    if tool_names:
-        parts.append("Tools used: " + ", ".join(sorted(tool_names)) + ".")
-    return " ".join(parts)
+        if m.get("role") != "user":
+            continue
+        text = m.get("content", "")
+        # First sentence: up to first period, or first 80 chars.
+        sentence = text.split(".")[0].strip()
+        if len(sentence) > 80:
+            sentence = sentence[:77] + "..."
+        if sentence:
+            user_snippets.append(sentence)
+    if not user_snippets:
+        return ""
+    return "User asked about " + "; ".join(user_snippets) + "."
 
 
 def summarize_dropped(dropped: list) -> str:

@@ -16,6 +16,7 @@ from agent import apply_summary, run_agent, trim_history
 from config import NUM_CTX
 from display import on_tool_end, on_tool_start
 from permissions import check_permission
+from providers import get_active_provider
 from repl.commands import SLASH_COMMANDS, handle_slash
 from repl.console import console
 from repl.persistence import (
@@ -129,8 +130,14 @@ def main() -> None:
                     debug=state["debug"],
                 )
                 ctx_before_trim = state["ctx_used"]
+                # tools + model_name keep the trim loop's count aligned
+                # with the gate-check value run_agent computed (which is
+                # tool-schema-aware). Without them, trim stops at
+                # history <= target while the real prompt is still over
+                # by the schema budget.
                 state["history"], dropped = trim_history(
-                    state["history"], state["ctx_used"], NUM_CTX
+                    state["history"], state["ctx_used"], NUM_CTX,
+                    tools=tools, model_name=get_active_provider().model,
                 )
                 if dropped:
                     with console.status(

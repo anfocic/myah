@@ -556,7 +556,13 @@ def _run_tools_parallel(
                     results[i] = msg
                     _notify_end(name, args, msg, False, end_meta)
         else:
-            with ThreadPoolExecutor(max_workers=len(approved)) as ex:
+            # NOTE: cancel_futures=True only cancels futures that haven't
+            # started yet. A bash tool already mid-`subprocess.run` keeps
+            # running on its worker thread until it returns — Python doesn't
+            # interrupt threads. The Ctrl+C path makes the REPL responsive
+            # again; in-flight workers just become orphans until they finish.
+            ex = ThreadPoolExecutor(max_workers=len(approved))
+            try:
                 future_to_idx = {
                     ex.submit(_timed_tool_call, execute_tool, name, args): (i, name, args, meta)
                     for (i, name, args, meta) in approved
@@ -575,5 +581,13 @@ def _run_tools_parallel(
                         msg = f"Tool raised: {type(e).__name__}: {e}"
                         results[i] = msg
                         _notify_end(name, args, msg, False, end_meta)
+            except KeyboardInterrupt:
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+            finally:
+                # Idempotent: if KeyboardInterrupt already shut us down,
+                # this is a no-op. Otherwise it cleans up cleanly even when
+                # an unrelated exception escaped the loop.
+                ex.shutdown(wait=False)
 
     return [r if r is not None else "" for r in results]

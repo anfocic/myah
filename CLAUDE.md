@@ -91,13 +91,12 @@ The REPL now prints a per-turn context tag rather than the old context bar.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_PROVIDER` | `"ollama"` | Active provider at startup |
-| `OLLAMA_MODEL` | `"qwen2.5:7b-instruct"` | Default Ollama model |
-| `OPENAI_COMPAT_MODEL` | `"gpt-4o-mini"` | Default model for generic OpenAI-compatible servers |
+| `MODEL_PROVIDER` | `"openai-compat"` | Active provider at startup |
+| `OLLAMA_MODEL` | `"qwen/qwen3.5-9b"` | Default Ollama model |
+| `OPENAI_COMPAT_MODEL` | `"google/gemma-4-e4b"` | Default model for generic OpenAI-compatible servers |
 | `MODEL_NAME` | derived from provider | Active model label shown by harness surfaces |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `NUM_CTX` | `4096` | Context budget passed to providers |
-| `STREAM_DELAY_MS` | `100` | Optional artificial delay per streamed chunk for readability |
+| `NUM_CTX` | `32768` | Context budget passed to providers |
 | `TOOL_RESULT_MAX_BYTES` | `10000` | Harness-level cap before tool output is truncated |
 
 Hosted providers read their own env vars (`OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*`) via the provider factory.

@@ -11,7 +11,7 @@ Requires Python 3.11+ and either Ollama or credentials / base URLs for another s
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen/qwen3.5-9b
 python main.py
 ```
 

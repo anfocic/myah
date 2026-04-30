@@ -91,12 +91,31 @@ def test_trim_history_reserves_completion_tokens():
     assert len(new_history) == 2
 
 
+def test_trim_history_passes_tools_and_model_name_to_count():
+    """The inner count must include tool schemas and use the live
+    model_name — otherwise the loop undercounts vs the gate-check value
+    and stops trimming before the budget is actually met."""
+    history = _turn(0) + _turn(1)
+    fake_tools = [{"type": "function", "function": {"name": "x"}}]
+    with patch("agent.context.count_tokens", return_value=100) as mock_count:
+        trim_history(
+            list(history), ctx_used=10_000, num_ctx=4000,
+            tools=fake_tools, model_name="gpt-4o",
+        )
+    # First call inside the while loop received both kwargs.
+    args, kwargs = mock_count.call_args
+    assert kwargs.get("tools") is fake_tools
+    assert kwargs.get("model_name") == "gpt-4o"
+
+
 def test_summarize_dropped_extractive_fallback():
     """When the provider LLM call fails, summarize_dropped falls back to
-    a locally-built extractive summary instead of returning empty string."""
+    a locally-built extractive summary built from user messages only —
+    history never persists tool_calls, so the fallback can't surface
+    tool names."""
     dropped = [
         {"role": "user", "content": "Read the auth module and fix the bug."},
-        {"role": "assistant", "content": "Done.", "tool_calls": [{"name": "read_file"}]},
+        {"role": "assistant", "content": "Done."},
     ]
     with patch("agent.context.get_active_provider") as mock_get:
         mock_provider = MagicMock()
@@ -105,4 +124,3 @@ def test_summarize_dropped_extractive_fallback():
         result = summarize_dropped(dropped)
     assert result
     assert "auth module" in result
-    assert "read_file" in result
