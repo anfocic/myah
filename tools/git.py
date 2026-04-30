@@ -103,8 +103,8 @@ def git_status(porcelain: bool = True, cwd: str | None = None) -> str:
 
     By default uses porcelain mode (machine-parseable, no ANSI). Pass
     ``porcelain=False`` for the full human-readable format."""
-    flag = "--porcelain" if porcelain else "--no-porcelain"
-    result = _git(["git", "status", flag], cwd=cwd)
+    argv = ["git", "status", "--porcelain"] if porcelain else ["git", "status"]
+    result = _git(argv, cwd=cwd)
     if result.returncode != 0:
         return f"git status failed: {(result.stderr or result.stdout).strip()}"
     output = result.stdout

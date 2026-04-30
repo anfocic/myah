@@ -15,23 +15,24 @@ closure access that generic adapters cannot provide:
 - `harness_info`  — needs the live state dict + tool name list
 - `spawn_subagent` — needs the full execute_tool closure + permission_check
 """
+
 from typing import Any
 
+# Import every tool submodule so their `register()` calls populate the
+# shared registry. The side-effect is intentional and idempotent.
+import tools.bash  # noqa: F401
+import tools.files  # noqa: F401
+import tools.git  # noqa: F401
+import tools.search  # noqa: F401
+import tools.utils  # noqa: F401
+import tools.vault  # noqa: F401
+import tools.web_search  # noqa: F401
 from repl.console import console
 from repl.state import State
 from tools.cd import cd, pwd
 from tools.harness import harness_info
 from tools.spec import get_registry
 from tools.subagent import spawn_subagent
-
-# Import every tool submodule so their `register()` calls populate the
-# shared registry. The side-effect is intentional and idempotent.
-import tools.bash   # noqa: F401
-import tools.files  # noqa: F401
-import tools.git    # noqa: F401
-import tools.search # noqa: F401
-import tools.utils  # noqa: F401
-import tools.web_search # noqa: F401
 
 # Special-case schemas for tools that need state/closure access and therefore
 # cannot be registered via the generic adapter pattern in their home modules.
@@ -132,6 +133,7 @@ def make_execute_tool(state: State, permission_check=None):
         # state.get() so test fixtures that hand-construct a State (instead of
         # using new_state()) don't crash.
         import os as _os
+
         cwd = state.get("cwd") or _os.getcwd()
         try:
             if name == "pwd":

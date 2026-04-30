@@ -53,7 +53,7 @@ def cd(state_cwd_getter, state_cwd_setter, path: str) -> str:
         return f"cd: {path}: Not a directory"
 
     # Silent no-op if already there (avoids spurious state change).
-    if os.path.realpath(resolved) == os.path.realpath(current):
+    if resolved == os.path.realpath(current):
         return resolved
 
     state_cwd_setter(resolved)

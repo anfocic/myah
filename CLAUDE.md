@@ -174,3 +174,15 @@ The harness will grow new capabilities over time. Prefer incremental, pragmatic 
 - **AST-aware editing next** — validate `edit_file` replacements with tree-sitter before applying, or support line-range reads (`offset` / `limit`). Safer than pure string replacement without the heft of a full language server.
 - **Symbol indexing lightweight** — `ctags` or `ripgrep` with word boundaries gives the model fast lookup without per-language server lifecycle management.
 - **LSP is a future advanced module** — LSP adds real value for `references`, `rename`, `hover`, and `diagnostics`, but it also hides mechanism behind JSON-RPC, file synchronization, and server lifecycle. Add it only after the simpler layers are in place and the educational foundation is solid.
+
+## Decisions (ADR)
+
+Architectural decisions are documented as numbered ADR files in `vault/wiki/decisions/`. Template: `vault/templates/adr.md`. Index: `vault/wiki/decisions/README.md`.
+
+**When to write an ADR:** any non-obvious architectural choice with tradeoffs. If it goes in the session file as a decision, it belongs in `vault/wiki/decisions/`.
+
+**Format:** `NNNN-slug.md` — append the next number, zero-padded to 4 digits. Each file has frontmatter (`status: accepted|proposed|deprecated|superseded`, `supersedes`, `superseded_by`) and three sections: **Context** (forces at play), **Decision** (what we chose, present tense), **Consequences** (what becomes easier/harder).
+
+**Status lifecycle:** `proposed` → `accepted` → `deprecated` / `superseded`. When superseding, set `superseded_by` on the old ADR and `supersedes` on the new one. Cross-reference related ADRs with Obsidian-style `[[NNNN-slug]]` links.
+
+**Tool support:** use `vault_search` to find prior decisions before implementing new features. The vault lives at `vault/` (sibling to this file) and contains the full ADR index plus patterns, gotchas, and plans.

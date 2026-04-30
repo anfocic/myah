@@ -39,6 +39,7 @@ class TurnResult:
     (four chunk channels, UI rendering, exit paths) can be unit-tested
     without message assembly or tool dispatch. See
     `vault/wiki/code/agent-loop.md` §Phase 3 for the mental model."""
+
     content: str = ""
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
@@ -102,7 +103,10 @@ def _stream_provider_turn(
                     # the formatting so the delta itself stays literal.
                     console.print(
                         chunk.reasoning_delta,
-                        end="", style="dim italic", soft_wrap=True, markup=False,
+                        end="",
+                        style="dim italic",
+                        soft_wrap=True,
+                        markup=False,
                     )
 
             if chunk.content_delta:
@@ -225,7 +229,8 @@ def _call_with_optional_meta(func, *args, meta: dict | None = None):
         return func(*args, meta=meta)
 
     positional = [
-        p for p in sig.parameters.values()
+        p
+        for p in sig.parameters.values()
         if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     ]
     if len(positional) >= len(args) + 1:
@@ -316,8 +321,12 @@ def run_agent(
             _debug_dump_messages(console, messages)
 
         turn = _stream_provider_turn(
-            provider, messages, tools, NUM_CTX,
-            console=console, start_time=start,
+            provider,
+            messages,
+            tools,
+            NUM_CTX,
+            console=console,
+            start_time=start,
         )
 
         if turn.reasoning:
@@ -350,7 +359,9 @@ def run_agent(
             reasoning=turn.reasoning,
         )
 
-        ctx_used = (turn.usage.prompt_tokens if turn.usage else None) or count_tokens(messages, tools=tools, model_name=provider.model)
+        ctx_used = (turn.usage.prompt_tokens if turn.usage else None) or count_tokens(
+            messages, tools=tools, model_name=provider.model
+        )
 
         if turn.tool_calls:
             # Spinning guard: if the model keeps asking for the same
@@ -363,35 +374,30 @@ def run_agent(
             for tc in turn.tool_calls:
                 args_canonical = json.dumps(tc.arguments, sort_keys=True, default=str)
                 recent_calls.append((tc.name, args_canonical))
-            if (
-                len(recent_calls) == SPIN_WINDOW
-                and len(set(recent_calls)) == 1
-            ):
+            if len(recent_calls) == SPIN_WINDOW and len(set(recent_calls)) == 1:
                 name, args_canonical = recent_calls[0]
                 return _halt_run(
                     reason="spinning",
-                    detail=(
-                        f"{name}({args_canonical}) repeated {SPIN_WINDOW} "
-                        "consecutive times"
-                    ),
+                    detail=(f"{name}({args_canonical}) repeated {SPIN_WINDOW} consecutive times"),
                     user_input=user_input,
                     history=history,
                     ctx_used=ctx_used,
                     console=console,
                 )
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": turn.content,
-                    # Carry the tool calls on the assistant message. Ollama ignores
-                    # unknown fields; the openai-compat adapter uses them to build
-                    # the OpenAI-shaped tool_calls array with synthesized IDs.
-                    "tool_calls": [
-                        {"name": tc.name, "arguments": tc.arguments} for tc in turn.tool_calls
-                    ],
-                }
-            )
+            assistant_msg: dict = {
+                "role": "assistant",
+                "content": turn.content,
+                # Carry the tool calls on the assistant message. Ollama ignores
+                # unknown fields; the openai-compat adapter uses them to build
+                # the OpenAI-shaped tool_calls array with synthesized IDs.
+                "tool_calls": [
+                    {"name": tc.name, "arguments": tc.arguments} for tc in turn.tool_calls
+                ],
+            }
+            if turn.reasoning:
+                assistant_msg["reasoning_content"] = turn.reasoning
+            messages.append(assistant_msg)
             results = _run_tools_parallel(
                 turn.tool_calls,
                 execute_tool,

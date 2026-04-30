@@ -106,7 +106,8 @@ Rules:
 - Never return an empty response
 - For tasks needing multiple steps, do them one at a time
 - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path
-- For a self-contained investigative subtask (e.g. "find every place X is called and summarize"), consider calling `spawn_subagent` — the subagent runs with a fresh context window, so its tool chatter doesn't eat yours."""
+- For a self-contained investigative subtask (e.g. "find every place X is called and summarize"), consider calling `spawn_subagent` — the subagent runs with a fresh context window, so its tool chatter doesn't eat yours.
+- A project knowledge vault exists at `vault/` (sibling to `CLAUDE.md`). Before implementing new features or patterns, call `vault_search` to check for existing templates, documented decisions, or prior examples."""
 
     parts: dict[str, str] = {
         "persona": persona,

@@ -19,7 +19,7 @@ from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
 _OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
-_OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.dev/v1")
+_OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1")
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Reasonable defaults for `/model <provider-name>` with no model specified
@@ -30,7 +30,7 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-chat",
     "google": "gemma-4-e4b",
-    "opencode": "opencode/default",
+    "opencode": "kimi-k2.6",
     "openrouter": "nousresearch/hermes-3-llama-3.1-405b",
 }
 

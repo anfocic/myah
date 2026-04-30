@@ -77,7 +77,7 @@ elif MODEL_PROVIDER == "google":
 elif MODEL_PROVIDER == "opencode":
     MODEL_NAME = env_override(
         "OPENCODE_MODEL", "provider.models.opencode",
-        _models_cfg.get("opencode", "opencode/default"),
+        _models_cfg.get("opencode", "kimi-k2.6"),
     )
 elif MODEL_PROVIDER == "openrouter":
     MODEL_NAME = env_override(

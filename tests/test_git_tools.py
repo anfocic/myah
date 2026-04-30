@@ -62,7 +62,7 @@ def test_git_status_non_porcelain(monkeypatch):
     m.result = {"returncode": 0, "stdout": "On branch main\n", "stderr": ""}
     out = git_status(porcelain=False)
     assert "On branch main" in out
-    assert m.calls[-1] == ["git", "status", "--no-porcelain"]
+    assert m.calls[-1] == ["git", "status"]
 
 
 def test_git_status_clean_tree_returns_paren_message(monkeypatch):

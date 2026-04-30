@@ -59,7 +59,7 @@ def _short_branch(name: str) -> str:
     return name if len(name) <= _BRANCH_MAX else name[: _BRANCH_MAX - 1] + "…"
 
 
-_CWD_MAX = 12
+_CWD_MAX = 20
 
 
 def _short_cwd(cwd: str) -> str:

@@ -8,4 +8,5 @@ in `repl/tool_registry.py`. Each submodule owns one or more related tools:
 - `git`     — git_checkout
 - `harness` — harness_info / harness_snapshot
 - `utils`   — get_current_time
+- `vault`   — vault_search (query knowledge base for patterns / templates)
 """
