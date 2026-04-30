@@ -153,7 +153,7 @@ def make_execute_tool(state: State, permission_check=None):
             elif name == "spawn_subagent":
                 return spawn_subagent(
                     task=args["task"],
-                    tools=tools,
+                    tools=TOOL_SCHEMAS,
                     execute_tool=execute_tool,
                     permission_check=permission_check,
                     console=console,

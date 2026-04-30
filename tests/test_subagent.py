@@ -286,3 +286,38 @@ def test_depth_counter_resets_after_successful_call(install_provider, reset_dept
         console=None,
     )
     assert subagent._depth == 0
+
+
+def test_spawn_subagent_via_registry_passes_valid_tools(install_provider, reset_depth):
+    """When the model calls spawn_subagent through make_execute_tool, the
+    dispatcher must pass a list of schema dicts — not the `tools` module.
+    Regression: `tools=tools` passed the module object, causing a TypeError
+    when spawn_subagent iterated it looking for dict entries."""
+    provider = install_provider([
+        {"chunks": ["done"]},
+    ])
+
+    from repl.state import new_state
+    from repl.tool_registry import make_execute_tool
+
+    state = new_state()
+    execute_tool = make_execute_tool(state)
+
+    # Direct registry dispatch: no mocking of spawn_subagent itself.
+    result = execute_tool(
+        "spawn_subagent",
+        {"task": "verify tool list shape"},
+    )
+
+    # Should succeed (wrapped in markers), not crash.
+    assert "<subagent_result>" in result
+    assert "done" in result
+
+    # The provider's stream_chat received a real list of dicts.
+    assert len(provider.seen_tools) == 1
+    child_tools = provider.seen_tools[0]
+    assert isinstance(child_tools, list)
+    assert all(isinstance(t, dict) for t in child_tools)
+    names = {t["function"]["name"] for t in child_tools}
+    assert "spawn_subagent" not in names
+
