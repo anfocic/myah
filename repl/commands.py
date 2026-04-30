@@ -63,7 +63,11 @@ def cmd_config(state: State, arg: str = "") -> None:
 
     if sub == "reload":
         reload_config()
-        console.print("[dim]↳ config reloaded[/dim]")
+        console.print(
+            "[dim]↳ config reloaded into cache; restart for changes to "
+            "module-level constants (NUM_CTX, MODEL_NAME, etc.) to take "
+            "effect in the running harness[/dim]"
+        )
         return
 
     if sub == "path":
@@ -73,13 +77,18 @@ def cmd_config(state: State, arg: str = "") -> None:
         return
 
     if sub == "edit":
+        import shlex
+        import subprocess
+
         user_path = config_paths()["user"]
         user_path.parent.mkdir(parents=True, exist_ok=True)
         if not user_path.exists():
             user_path.write_text("{\n}\n")
         editor = os.environ.get("EDITOR", "vi")
         console.print(f"[dim]↳ opening {user_path} in {editor}...[/dim]")
-        os.system(f'{editor} "{user_path}"')
+        # shlex.split preserves common multi-word EDITOR values like
+        # "code --wait" while keeping us off the shell (no injection).
+        subprocess.call([*shlex.split(editor), str(user_path)])
         return
 
     # Default: show merged config with provenance

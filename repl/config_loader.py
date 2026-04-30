@@ -27,6 +27,11 @@ DEFAULTS: dict = {
         "models": {
             "ollama": "qwen/qwen3.5-9b",
             "openai-compat": "google/gemma-4-e4b",
+            "openai": "gpt-4.1-mini",
+            "anthropic": "claude-sonnet-4-6",
+            "deepseek": "deepseek-chat",
+            "google": "gemma-4-e4b",
+            "opencode": "opencode/default",
         },
     },
     "context": {
@@ -35,15 +40,8 @@ DEFAULTS: dict = {
         "tool_result_max_bytes": 10_000,
     },
     "behavior": {
-        "stream_delay_ms": 100,
         "max_completion_tokens": 4096,
         "max_iterations": 50,
-        "confirm_mutating_tools": True,
-    },
-    "display": {
-        "show_turn_header": True,
-        "show_turn_footer": True,
-        "tool_colors": True,
     },
     "paths": {
         "session_file": "~/.mia_session.json",
@@ -157,3 +155,34 @@ def config_paths() -> dict[str, Path]:
         "project": PROJECT_CONFIG,
         "project-local": PROJECT_LOCAL_CONFIG,
     }
+
+
+def _set_dotted(d: dict, dotted: str, value) -> None:
+    keys = dotted.split(".")
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    d[keys[-1]] = value
+
+
+def record_env_override(dotted_key: str, value) -> None:
+    """Mark a config key as overridden by an environment variable.
+
+    Patches both the cached config (so `/config` displays the live value)
+    and the provenance map (so the source label shows `env`)."""
+    if _config_cache is None or _provenance_cache is None:
+        load_config()
+    assert _config_cache is not None and _provenance_cache is not None
+    _set_dotted(_config_cache, dotted_key, value)
+    _provenance_cache[dotted_key] = "env"
+
+
+def env_override(env_key: str, dotted: str, default):
+    """Read an env var if set, else return `default`. When env wins, also
+    record provenance so `/config` surfaces it. Use this anywhere a
+    `from config import X` value can be overridden by an env var."""
+    import os
+    if env_key in os.environ:
+        v = os.environ[env_key]
+        record_env_override(dotted, v)
+        return v
+    return default

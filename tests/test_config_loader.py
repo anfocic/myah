@@ -7,9 +7,12 @@ from repl.config_loader import (
     DEFAULTS,
     _deep_merge,
     _load_layer,
+    _set_dotted,
     config_paths,
+    env_override,
     get_config,
     get_provenance,
+    record_env_override,
     reload_config,
 )
 
@@ -95,14 +98,14 @@ class TestLoadConfig:
 
     def test_local_layer_overrides_project(self, tmp_path, monkeypatch):
         proj = tmp_path / "proj.json"
-        proj.write_text(json.dumps({"behavior": {"stream_delay_ms": 0}}))
+        proj.write_text(json.dumps({"behavior": {"max_iterations": 10}}))
         local = tmp_path / "local.json"
-        local.write_text(json.dumps({"behavior": {"stream_delay_ms": 50}}))
+        local.write_text(json.dumps({"behavior": {"max_iterations": 25}}))
         monkeypatch.setattr(config_loader, "USER_CONFIG", tmp_path / "user.json")
         monkeypatch.setattr(config_loader, "PROJECT_CONFIG", proj)
         monkeypatch.setattr(config_loader, "PROJECT_LOCAL_CONFIG", local)
         reload_config()
-        assert get_config()["behavior"]["stream_delay_ms"] == 50
+        assert get_config()["behavior"]["max_iterations"] == 25
 
     def test_deep_merge_preserves_untouched_keys(self, tmp_path, monkeypatch):
         proj = tmp_path / "proj.json"
@@ -160,3 +163,80 @@ class TestConfigPaths:
     def test_paths_are_path_objects(self):
         for p in config_paths().values():
             assert isinstance(p, Path)
+
+
+class TestSetDotted:
+    def test_sets_top_level(self):
+        d = {}
+        _set_dotted(d, "a", 1)
+        assert d == {"a": 1}
+
+    def test_creates_nested(self):
+        d = {}
+        _set_dotted(d, "a.b.c", 42)
+        assert d == {"a": {"b": {"c": 42}}}
+
+    def test_overwrites_existing(self):
+        d = {"a": {"b": 1}}
+        _set_dotted(d, "a.b", 2)
+        assert d == {"a": {"b": 2}}
+
+
+class TestEnvOverride:
+    def test_env_unset_returns_default(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config_loader, "USER_CONFIG", tmp_path / "u.json")
+        monkeypatch.setattr(config_loader, "PROJECT_CONFIG", tmp_path / "p.json")
+        monkeypatch.setattr(config_loader, "PROJECT_LOCAL_CONFIG", tmp_path / "l.json")
+        monkeypatch.delenv("MYAH_TEST_VAR", raising=False)
+        reload_config()
+        assert env_override("MYAH_TEST_VAR", "behavior.x", "fallback") == "fallback"
+        # Provenance not touched
+        assert "behavior.x" not in get_provenance()
+
+    def test_env_set_returns_env_value(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config_loader, "USER_CONFIG", tmp_path / "u.json")
+        monkeypatch.setattr(config_loader, "PROJECT_CONFIG", tmp_path / "p.json")
+        monkeypatch.setattr(config_loader, "PROJECT_LOCAL_CONFIG", tmp_path / "l.json")
+        monkeypatch.setenv("MYAH_TEST_VAR", "from-env")
+        reload_config()
+        assert env_override("MYAH_TEST_VAR", "behavior.x", "fallback") == "from-env"
+        # Provenance now reflects env
+        assert get_provenance()["behavior.x"] == "env"
+        # Cache patched too — /config display will see the live value
+        assert get_config()["behavior"]["x"] == "from-env"
+
+    def test_env_override_beats_file_layer(self, tmp_path, monkeypatch):
+        user = tmp_path / "u.json"
+        user.write_text(json.dumps({"context": {"num_ctx": 4096}}))
+        monkeypatch.setattr(config_loader, "USER_CONFIG", user)
+        monkeypatch.setattr(config_loader, "PROJECT_CONFIG", tmp_path / "p.json")
+        monkeypatch.setattr(config_loader, "PROJECT_LOCAL_CONFIG", tmp_path / "l.json")
+        monkeypatch.setenv("MYAH_NUM_CTX_TEST", "9999")
+        reload_config()
+        # Pre-env-override, provenance = "user"
+        assert get_provenance()["context.num_ctx"] == "user"
+        # Apply env override
+        env_override("MYAH_NUM_CTX_TEST", "context.num_ctx", "ignored")
+        assert get_provenance()["context.num_ctx"] == "env"
+
+
+class TestRecordEnvOverride:
+    def test_patches_cache_and_provenance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config_loader, "USER_CONFIG", tmp_path / "u.json")
+        monkeypatch.setattr(config_loader, "PROJECT_CONFIG", tmp_path / "p.json")
+        monkeypatch.setattr(config_loader, "PROJECT_LOCAL_CONFIG", tmp_path / "l.json")
+        reload_config()
+        record_env_override("provider.default", "anthropic")
+        assert get_config()["provider"]["default"] == "anthropic"
+        assert get_provenance()["provider.default"] == "env"
+
+
+class TestProviderModelsCoverage:
+    def test_defaults_cover_all_supported_providers(self):
+        # If a new provider is added to SUPPORTED_PROVIDERS, defaults
+        # should also list a model for it so file config can override it.
+        from providers import SUPPORTED_PROVIDERS
+
+        models = DEFAULTS["provider"]["models"]
+        for name in SUPPORTED_PROVIDERS:
+            assert name in models, f"{name!r} missing from provider.models defaults"
