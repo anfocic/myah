@@ -44,7 +44,11 @@ def provider(monkeypatch):
         _next = _fake_response(42)
 
     monkeypatch.setattr(ollama, "Client", FakeClient)
-    p = OllamaProvider(model="qwen2.5:7b-instruct", base_url="http://127.0.0.1:0")
+    p = OllamaProvider(
+        model="qwen2.5:7b-instruct",
+        base_url="http://127.0.0.1:0",
+        context_size=32768,
+    )
     return p
 
 

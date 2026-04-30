@@ -187,6 +187,10 @@ def test_openai_compat_ensure_exclusive_noop_for_non_lm_studio(monkeypatch):
 
     monkeypatch.setattr("providers.openai_compat.subprocess.run", fake_run)
 
-    p = OpenAICompatProvider(model="gpt-4.1-mini", base_url="https://api.openai.com/v1")
+    p = OpenAICompatProvider(
+        model="gpt-4.1-mini",
+        base_url="https://api.openai.com/v1",
+        context_size=128_000,
+    )
     p.ensure_exclusive()  # must not raise or call subprocess
     assert invocations == []

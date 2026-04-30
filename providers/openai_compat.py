@@ -51,18 +51,15 @@ class OpenAICompatProvider(Provider):
         base_url: str,
         api_key: str = "",
         *,
-        include_reasoning_in_history: bool = False,
-        context_size: int | None = None,
+        context_size: int,
     ):
         self.model = model
-        self.include_reasoning_in_history = include_reasoning_in_history
-        from config import NUM_CTX
-
-        self.context_size = context_size or NUM_CTX
+        self.context_size = context_size
         self._base = base_url.rstrip("/")
         self._headers = {"Content-Type": "application/json"}
         if api_key:
             self._headers["Authorization"] = f"Bearer {api_key}"
+        # Long read timeout so streaming doesn't time out mid-response.
         self._client = httpx.Client(timeout=httpx.Timeout(30.0, read=None))
 
     def stream_chat(
@@ -73,9 +70,7 @@ class OpenAICompatProvider(Provider):
     ) -> Iterator[StreamChunk]:
         payload: dict = {
             "model": self.model,
-            "messages": _translate_messages(
-                messages, include_reasoning=self.include_reasoning_in_history
-            ),
+            "messages": _translate_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": MAX_COMPLETION_TOKENS,
@@ -116,9 +111,7 @@ class OpenAICompatProvider(Provider):
         except KeyError:
             enc = tiktoken.get_encoding("cl100k_base")
 
-        translated = _translate_messages(
-            messages, include_reasoning=self.include_reasoning_in_history
-        )
+        translated = _translate_messages(messages)
         total = 0
         for msg in translated:
             total += _PER_MESSAGE_TOKENS
@@ -143,9 +136,7 @@ class OpenAICompatProvider(Provider):
     def chat(self, messages: list[dict], num_ctx: int) -> tuple[str, Usage]:
         payload = {
             "model": self.model,
-            "messages": _translate_messages(
-                messages, include_reasoning=self.include_reasoning_in_history
-            ),
+            "messages": _translate_messages(messages),
             "stream": False,
             "max_tokens": MAX_COMPLETION_TOKENS,
         }
@@ -315,18 +306,10 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
     )
 
 
-def _translate_messages(
-    messages: list[dict], *, include_reasoning: bool = False
-) -> list[dict]:
+def _translate_messages(messages: list[dict]) -> list[dict]:
     """Translate from the internal (Ollama-shaped) message list to the
     OpenAI-compat shape. The only real work is synthesizing tool_call_ids
     so each assistant's tool_calls pair with the following tool messages.
-
-    `include_reasoning` controls whether `reasoning_content` survives into
-    the wire format. Default is False: old reasoning text is stripped to
-    avoid poisoning context on models that get confused by it (qwen3).
-    Providers that require reasoning_content on every tool-call assistant
-    message (Moonshot / kimi) set this to True.
 
     Internal shape (produced by agent.py):
         {"role": "system", "content": "..."}
@@ -339,7 +322,7 @@ def _translate_messages(
 
     OpenAI shape:
         assistant.tool_calls = [{"id": "call_0", "type": "function",
-                                  "function": {"name": ..., "arguments": json_str}}]
+                                 "function": {"name": ..., "arguments": json_str}}]
         tool.tool_call_id = "call_0"
     """
     out: list[dict] = []
@@ -378,13 +361,15 @@ def _translate_messages(
                         },
                     }
                 )
-            assistant_msg: dict[str, object] = {
+            assistant_msg = {
                 "role": "assistant",
                 "content": msg.get("content") or "",
                 "tool_calls": oai_tool_calls,
+                # Moonshot AI (kimi-k2.6) requires reasoning_content on every
+                # assistant message with tool_calls when thinking is enabled.
+                # Empty string is fine; missing key triggers a 400.
+                "reasoning_content": msg.get("reasoning_content") or "",
             }
-            if include_reasoning:
-                assistant_msg["reasoning_content"] = msg.get("reasoning_content") or ""
             out.append(assistant_msg)
             pending_ids = ids_for_this
         elif role == "tool":
@@ -401,9 +386,12 @@ def _translate_messages(
                 }
             )
         else:
-            keys = {"role", "content", "name"}
-            if include_reasoning:
-                keys.add("reasoning_content")
-            out.append({k: v for k, v in msg.items() if k in keys})
+            out.append(
+                {
+                    k: v
+                    for k, v in msg.items()
+                    if k in ("role", "content", "name", "reasoning_content")
+                }
+            )
 
     return out

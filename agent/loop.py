@@ -389,11 +389,15 @@ def run_agent(
             assistant_msg: dict = {
                 "role": "assistant",
                 "content": turn.content,
+                # Carry the tool calls on the assistant message. Ollama ignores
+                # unknown fields; the openai-compat adapter uses them to build
+                # the OpenAI-shaped tool_calls array with synthesized IDs.
                 "tool_calls": [
                     {"name": tc.name, "arguments": tc.arguments} for tc in turn.tool_calls
                 ],
-                "reasoning_content": turn.reasoning,
             }
+            if turn.reasoning:
+                assistant_msg["reasoning_content"] = turn.reasoning
             messages.append(assistant_msg)
             results = _run_tools_parallel(
                 turn.tool_calls,

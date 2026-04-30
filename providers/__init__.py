@@ -12,6 +12,7 @@ import os
 from env import load_dotenv
 
 from .base import Provider, ProviderError, StreamChunk, ToolCall, Usage
+from .context_sizes import lookup as lookup_context_size
 
 # Default base URLs for the hosted providers. Overridable via env so
 # proxies (LiteLLM, OpenRouter pretending to be OpenAI, an Anthropic-on-
@@ -50,31 +51,44 @@ def build_provider(name: str, model: str) -> Provider:
     load_dotenv()
 
     if name == "ollama":
-        from config import OLLAMA_BASE_URL
+        from config import NUM_CTX, OLLAMA_BASE_URL
 
         from .ollama_adapter import OllamaProvider
 
-        return OllamaProvider(model, OLLAMA_BASE_URL)
+        # Local Ollama: the user-configured NUM_CTX is the source of truth
+        # because it's what we pass back to the daemon as the runtime
+        # allocation for the KV cache. No published "context size" exists
+        # independently of it.
+        return OllamaProvider(model, OLLAMA_BASE_URL, context_size=NUM_CTX)
 
     if name == "openai-compat":
-        from config import OPENAI_COMPAT_BASE_URL
+        from config import NUM_CTX, OPENAI_COMPAT_BASE_URL
 
         from .openai_compat import OpenAICompatProvider
 
+        # Generic OpenAI-compatible servers (LM Studio, vLLM, llama.cpp):
+        # we have no way to introspect the loaded model's window, so the
+        # user-configured NUM_CTX is the safest default.
         return OpenAICompatProvider(
             model=model,
             base_url=OPENAI_COMPAT_BASE_URL,
             api_key=os.environ.get("OPENAI_COMPAT_API_KEY", ""),
+            context_size=NUM_CTX,
         )
 
     if name == "openai":
+        # First-party OpenAI. Reuses the openai-compat adapter because the
+        # Chat Completions wire format is identical — the only difference
+        # from the generic compat path is a hardcoded base URL and a
+        # dedicated API-key env var. If/when we want Responses API or
+        # reasoning_effort plumbing, that motivates a separate adapter.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENAI_BASE_URL", _OPENAI_BASE_URL),
             api_key=os.environ.get("OPENAI_API_KEY", ""),
-            context_size=128_000,
+            context_size=lookup_context_size(model, default=128_000),
         )
         provider.name = "openai"
         return provider
@@ -86,21 +100,29 @@ def build_provider(name: str, model: str) -> Provider:
             model=model,
             api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             base_url=os.environ.get("ANTHROPIC_BASE_URL", _ANTHROPIC_BASE_URL),
+            context_size=lookup_context_size(model, default=200_000),
         )
 
     if name == "deepseek":
+        # DeepSeek exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when DeepSeek-specific features (FIM, reasoning-mode toggles
+        # for `deepseek-reasoner`) need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("DEEPSEEK_BASE_URL", _DEEPSEEK_BASE_URL),
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            context_size=64_000,
+            context_size=lookup_context_size(model, default=64_000),
         )
         provider.name = "deepseek"
         return provider
 
     if name == "google":
+        # Google exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when Gemini-specific features need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
@@ -110,33 +132,40 @@ def build_provider(name: str, model: str) -> Provider:
                 "https://generativelanguage.googleapis.com/v1beta/openai",
             ),
             api_key=os.environ.get("GOOGLE_API_KEY", ""),
-            context_size=32_000,
+            context_size=lookup_context_size(model, default=32_000),
         )
         provider.name = "google"
         return provider
 
     if name == "opencode":
+        # OpenCode exposes an OpenAI-compatible endpoint; same adapter,
+        # different host + API-key env var. Split into a dedicated adapter
+        # if/when OpenCode-specific features need bespoke handling.
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENCODE_BASE_URL", _OPENCODE_BASE_URL),
             api_key=os.environ.get("OPENCODE_API_KEY", ""),
-            include_reasoning_in_history=True,
-            context_size=128_000,
+            context_size=lookup_context_size(model, default=128_000),
         )
         provider.name = "opencode"
         return provider
 
     if name == "openrouter":
         # OpenRouter exposes an OpenAI-compatible endpoint; same adapter,
-        # different host + API-key env var.
+        # different host + API-key env var. The catalog spans dozens of
+        # models with wildly different windows, so the per-model lookup
+        # matters more here than for single-vendor presets.
+        from config import NUM_CTX
+
         from .openai_compat import OpenAICompatProvider
 
         provider = OpenAICompatProvider(
             model=model,
             base_url=os.environ.get("OPENROUTER_BASE_URL", _OPENROUTER_BASE_URL),
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            context_size=lookup_context_size(model, default=NUM_CTX),
         )
         provider.name = "openrouter"
         return provider
