@@ -7,8 +7,9 @@ tool is a single-file change.
 Adapters are small named functions (not lambdas) so test monkeypatching works.
 The signature is `adapter(args: dict, cwd: str) -> str`.
 """
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)

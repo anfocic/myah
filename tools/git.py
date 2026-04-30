@@ -39,10 +39,12 @@ def _git(
             timeout=timeout,
             cwd=cwd,
         )
-    except subprocess.TimeoutExpired:
-        raise TimeoutError(f"git {' '.join(argv[1:])} timed out after {timeout}s")
-    except FileNotFoundError:
-        raise RuntimeError("git is not installed")
+    except subprocess.TimeoutExpired as err:
+        raise TimeoutError(
+            f"git {' '.join(argv[1:])} timed out after {timeout}s"
+        ) from err
+    except FileNotFoundError as err:
+        raise RuntimeError("git is not installed") from err
 
 
 # ---------------------------------------------------------------------------
