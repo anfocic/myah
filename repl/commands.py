@@ -24,7 +24,7 @@ from repl.console import console
 from repl.persistence import wipe_session
 from repl.state import State
 from repl.tool_registry import TOOL_NAMES
-from repl.tool_registry import tools as REGISTERED_TOOLS
+from repl.tool_registry import TOOL_SCHEMAS as REGISTERED_TOOLS
 from repl.ui import ctx_tag
 
 

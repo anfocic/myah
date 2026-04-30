@@ -25,7 +25,7 @@ from repl.persistence import (
     save_session,
 )
 from repl.state import State, new_state
-from repl.tool_registry import make_execute_tool, tools
+from repl.tool_registry import TOOL_SCHEMAS, make_execute_tool
 from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
 
 
@@ -121,7 +121,7 @@ def main() -> None:
             dropped: list = []
             try:
                 response, state["history"], state["ctx_used"], stats = run_agent(
-                    user_input, tools, execute_tool, state["history"],
+                    user_input, TOOL_SCHEMAS, execute_tool, state["history"],
                     console=console,
                     permission_check=perm_check,
                     plan_mode=state["plan_mode"],
@@ -138,7 +138,7 @@ def main() -> None:
                 # by the schema budget.
                 state["history"], dropped = trim_history(
                     state["history"], state["ctx_used"], get_context_size(),
-                    tools=tools, model_name=get_active_provider().model,
+                    tools=TOOL_SCHEMAS, model_name=get_active_provider().model,
                 )
                 if dropped:
                     with console.status(

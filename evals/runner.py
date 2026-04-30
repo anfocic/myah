@@ -37,8 +37,8 @@ from agent.loop import run_agent
 from evals import checks as checks_mod
 from providers import build_provider, get_active_provider, set_active_provider
 from repl.state import new_state
+from repl.tool_registry import TOOL_SCHEMAS as ALL_TOOLS
 from repl.tool_registry import make_execute_tool
-from repl.tool_registry import tools as ALL_TOOLS
 
 EVALS_ROOT = Path(__file__).parent
 FIXTURES_ROOT = EVALS_ROOT / "fixtures"
