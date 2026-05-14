@@ -284,8 +284,14 @@ class ReplApp:
         return self.turn_thread is not None and self.turn_thread.is_alive()
 
     def _start_turn(self, user_input: str) -> None:
+        # Daemon thread: if a turn is wedged in a network read at exit, the
+        # injected KeyboardInterrupt can't land until the socket returns, and a
+        # non-daemon thread would then pin the whole process open. A daemon is
+        # reaped at interpreter shutdown — and a wedged provider read has
+        # nothing half-written to protect (run_agent already tolerates orphaned
+        # tool workers for the same reason).
         self.turn_thread = threading.Thread(
-            target=self._turn_worker, args=(user_input,), daemon=False
+            target=self._turn_worker, args=(user_input,), daemon=True
         )
         self.turn_thread.start()
 
