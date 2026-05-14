@@ -131,10 +131,10 @@ def note_list(folder: str | None = None) -> str:
     root = _vault_root()
     scan = root
     if folder:
-        scan = _resolve(folder.rstrip("/") + "/_")
-        scan = scan.parent if scan is not None else None
-        if scan is None or not scan.is_dir():
+        resolved = _resolve(folder.rstrip("/") + "/_")
+        if resolved is None or not resolved.parent.is_dir():
             return f"Folder not found: {folder}"
+        scan = resolved.parent
     notes = sorted(str(p.relative_to(root)) for p in _iter_notes(scan))
     if not notes:
         return "No notes found."
