@@ -46,7 +46,7 @@ tools/
   git.py        — narrow git helpers
   vault.py      — vault_search over the project's dev knowledge base
   notes.py      — note_* tools over the user's personal Obsidian vault
-  web_search.py — live web search via Brave
+  web_search.py — live web search via Brave + LLM summary of the top result's page
   harness.py    — harness_info snapshot
   subagent.py   — nested run_agent delegation
   utils.py      — get_current_time

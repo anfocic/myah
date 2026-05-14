@@ -57,7 +57,7 @@ def test_web_search_formats_brave_results(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
 
-    out = web_search("python agent harness", max_results=2)
+    out = web_search("python agent harness", max_results=2, summarize=False)
 
     assert "Web results for: python agent harness" in out
     assert "More results available: yes" in out
@@ -81,13 +81,15 @@ def test_registry_exposes_and_dispatches_web_search(monkeypatch, state):
 
     monkeypatch.setattr(
         "tools.web_search.web_search",
-        lambda query, max_results=5: f"search:{query}:{max_results}",
+        lambda query, max_results=5, summarize=True: (
+            f"search:{query}:{max_results}:{summarize}"
+        ),
     )
 
     execute_tool = make_execute_tool(state)
     out = execute_tool("web_search", {"query": "fresh facts", "max_results": 3})
 
-    assert out == "search:fresh facts:3"
+    assert out == "search:fresh facts:3:True"
 
 
 def test_parse_web_results_pairs_titles_with_urls():
@@ -150,6 +152,82 @@ def test_web_search_loads_api_key_from_dotenv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
 
-    web_search("fresh facts")
+    web_search("fresh facts", summarize=False)
 
     assert seen["headers"]["X-Subscription-Token"] == "dotenv-brave-key"
+
+
+class _FakeProvider:
+    def __init__(self, reply):
+        self._reply = reply
+        self.seen_messages = None
+
+    def chat(self, messages, num_ctx):
+        self.seen_messages = messages
+        return self._reply, None
+
+
+def _brave_response(url, params, headers):
+    request = httpx.Request("GET", url, params=params, headers=headers)
+    return httpx.Response(
+        200,
+        json={
+            "query": {"original": "best espresso machine"},
+            "web": {
+                "results": [
+                    {
+                        "title": "Top Pick",
+                        "url": "https://example.com/top",
+                        "description": "Brave's blurb.",
+                    }
+                ]
+            },
+        },
+        request=request,
+    )
+
+
+def test_web_search_includes_llm_summary_of_top_result(monkeypatch):
+    monkeypatch.setenv("BRAVE_API_KEY", "brave-test-key")
+
+    def fake_get(url, *, headers, timeout, params=None, follow_redirects=False):
+        if url == SEARCH_API_URL:
+            return _brave_response(url, params, headers)
+        request = httpx.Request("GET", url, headers=headers)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text="<html><body><script>junk()</script><p>Real page text.</p></body></html>",
+            request=request,
+        )
+
+    fake_provider = _FakeProvider("The page recommends the Top Pick machine.")
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("providers.get_active_provider", lambda: fake_provider)
+
+    out = web_search("best espresso machine", max_results=1)
+
+    assert "Summary of top result (https://example.com/top):" in out
+    assert "The page recommends the Top Pick machine." in out
+    # Snippet list is still present below the summary.
+    assert "[1] Top Pick" in out
+    # The summarizer saw the stripped page text, not raw HTML.
+    user_msg = fake_provider.seen_messages[-1]["content"]
+    assert "Real page text." in user_msg
+    assert "<script>" not in user_msg
+
+
+def test_web_search_falls_back_to_snippets_when_page_fetch_fails(monkeypatch):
+    monkeypatch.setenv("BRAVE_API_KEY", "brave-test-key")
+
+    def fake_get(url, *, headers, timeout, params=None, follow_redirects=False):
+        if url == SEARCH_API_URL:
+            return _brave_response(url, params, headers)
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    out = web_search("best espresso machine", max_results=1)
+
+    assert "Summary of top result" not in out
+    assert "[1] Top Pick" in out
