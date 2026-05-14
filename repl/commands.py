@@ -26,7 +26,7 @@ from repl.persistence import wipe_session
 from repl.state import State
 from repl.tool_registry import TOOL_NAMES
 from repl.tool_registry import TOOL_SCHEMAS as REGISTERED_TOOLS
-from repl.ui import _current_branch, ctx_tag
+from repl.ui import ctx_tag, render_session_rail
 
 
 def _config_value_repr(val) -> str:
@@ -625,17 +625,7 @@ def cmd_session(state: State, arg: str = "") -> None:
     The web mock pins this as a fixed side panel; a scrollback REPL can't
     (see display/streaming.py on staying off the alt screen), so the rail
     prints here and on the boot screen instead."""
-    provider = get_active_provider()
-    console.print(
-        phosphor.session_rail(
-            sess_state="READY",
-            branch=_current_branch(),
-            turns=len(state["history"]) // 2,
-            ctx_used=state.get("ctx_used", 0),
-            ctx_total=get_context_size(),
-            provider_label=f"{provider.name}:{provider.model}",
-        )
-    )
+    console.print(render_session_rail(state))
 
 
 SLASH_COMMANDS: dict = {

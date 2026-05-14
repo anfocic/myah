@@ -241,6 +241,21 @@ def build_transmission_header(state: State) -> str:
     return " ".join(parts)
 
 
+def render_session_rail(state: State) -> str:
+    """The Phosphor left-rail session console, resolved from current state.
+    Shared by the boot screen and the `/session` command — a scrollback REPL
+    can't pin it as a side panel, so it renders inline on demand instead."""
+    provider = get_active_provider()
+    return phosphor.session_rail(
+        sess_state="READY",
+        branch=_current_branch(),
+        turns=len(state["history"]) // 2,
+        ctx_used=state.get("ctx_used", 0),
+        ctx_total=get_context_size(),
+        provider_label=f"{provider.name}:{provider.model}",
+    )
+
+
 def build_turn_footer(ctx_used: int, ctx_total: int, elapsed_s: float, stats: dict) -> str:
     """Post-turn stats grouped into one footer line."""
     parts = [
