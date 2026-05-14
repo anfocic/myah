@@ -3,9 +3,15 @@
 Narrow by design: one query in, a compact plain-text result summary out.
 That keeps the tool easy for smaller local models to call correctly while
 still grounding answers in fresh web data.
+
+By default it also fetches the top result's page and folds an LLM-written
+summary of that page in above the snippet list — so the model gets the
+actual content behind the first link, not just Brave's blurb.
 """
 
+import html
 import os
+import re
 
 import httpx
 
@@ -16,6 +22,14 @@ SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_MAX_RESULTS = 5
 MAX_RESULTS = 20
 REQUEST_TIMEOUT_S = 15.0
+PAGE_FETCH_TIMEOUT_S = 12.0
+# Cap the page text we hand the summarizer: enough to capture the substance
+# of an article without blowing the summarization call's context budget.
+MAX_PAGE_CHARS = 6000
+
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript)\b.*?</\1>", re.I | re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
 API_KEY_ENV_VARS = (
     "BRAVE_SEARCH_API_KEY",
     "BRAVE_API_KEY",
@@ -105,7 +119,97 @@ def _format_location_results(query: str, data: dict, max_results: int) -> str:
     return "\n".join(lines).rstrip()
 
 
-def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
+def _fetch_page_text(url: str) -> str | None:
+    """Fetch `url` and return its visible text, or None on any failure.
+
+    Regex HTML stripping rather than a parser dependency: the harness keeps
+    its dependency surface small, and the summarizer model tolerates the
+    rough edges (stray whitespace, dropped structure) fine."""
+    try:
+        response = httpx.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; MiaBot/1.0)"},
+            timeout=PAGE_FETCH_TIMEOUT_S,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    content_type = response.headers.get("content-type", "").lower()
+    if "html" not in content_type and "text" not in content_type:
+        return None
+
+    body = _SCRIPT_STYLE_RE.sub(" ", response.text)
+    body = _TAG_RE.sub(" ", body)
+    body = html.unescape(body)
+    body = _WS_RE.sub(" ", body).strip()
+    return body[:MAX_PAGE_CHARS] or None
+
+
+def _summarize_page(query: str, url: str, page_text: str) -> str | None:
+    """Ask the active provider for a short, query-focused summary of a page.
+
+    Fails closed (returns None) on any provider error so a flaky summarization
+    call never takes down the search result the model actually asked for."""
+    try:
+        from config import NUM_CTX
+        from providers import get_active_provider
+
+        provider = get_active_provider()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You summarize a single web page for an agent. Reply with "
+                    "2-4 sentences capturing the facts most relevant to the "
+                    "user's query. Plain text only, no preamble, no markdown."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Query: {query}\nPage URL: {url}\n\n"
+                    f"Page content:\n{page_text}"
+                ),
+            },
+        ]
+        content, _usage = provider.chat(messages, NUM_CTX)
+    except Exception:
+        return None
+
+    content = content.strip()
+    return content or None
+
+
+def _summarize_top_result(query: str, results: list, fallback: str) -> str:
+    """Prepend an LLM summary of the top result's page to `fallback`.
+
+    Returns `fallback` unchanged if there's no usable top URL, the page
+    can't be fetched, or summarization fails — the snippet list is always
+    the floor, the summary is a bonus on top."""
+    if not results:
+        return fallback
+    top_url = _clean(results[0].get("url"), "")
+    if not top_url or top_url == "No URL":
+        return fallback
+
+    page_text = _fetch_page_text(top_url)
+    if not page_text:
+        return fallback
+
+    summary = _summarize_page(query, top_url, page_text)
+    if not summary:
+        return fallback
+
+    return f"Summary of top result ({top_url}):\n{summary}\n\n{fallback}"
+
+
+def web_search(
+    query: str,
+    max_results: int = DEFAULT_MAX_RESULTS,
+    summarize: bool = True,
+) -> str:
     """Search the public web and return a compact, model-friendly summary."""
     query = query.strip()
     if not query:
@@ -161,6 +265,9 @@ def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
 
     formatted = _format_web_results(query, data, count)
     if formatted:
+        if summarize:
+            results = ((data.get("web") or {}).get("results") or [])[:count]
+            formatted = _summarize_top_result(query, results, formatted)
         return formatted
 
     formatted = _format_location_results(query, data, count)
@@ -181,6 +288,7 @@ def _web_search_adapter(args: dict, _cwd: str):
     return web_search(
         args["query"],
         int(args.get("max_results", 5)),
+        summarize=bool(args.get("summarize", True)),
     )
 
 
@@ -193,6 +301,14 @@ register(
         "max_results": {
             "type": "integer",
             "description": "How many results to return (1-20, default 5).",
+        },
+        "summarize": {
+            "type": "boolean",
+            "description": (
+                "If true (default), also fetch the top result's page and "
+                "include an LLM-written summary of its content. Set false to "
+                "skip the extra fetch and get only the snippet list."
+            ),
         },
     },
     required=["query"],
