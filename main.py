@@ -31,6 +31,7 @@ from repl.ui import (
     build_session,
     build_transmission_header,
     build_turn_footer,
+    render_session_rail,
 )
 
 
@@ -53,10 +54,10 @@ def _ok_line(label: str, detail: str) -> str:
     )
 
 
-def _print_boot_screen(resume: bool) -> None:
+def _print_boot_screen(state: State, resume: bool) -> None:
     """The Phosphor boot screen: masthead, an INITIALIZE checklist of the
-    harness's real startup state, then a READY bracket. Replaces the old
-    one-line `Myah ready.` banner."""
+    harness's real startup state, a READY bracket, then the session-console
+    rail. Replaces the old one-line `Myah ready.` banner."""
     provider = get_active_provider()
     console.print(phosphor.masthead("full"))
     console.print()
@@ -81,15 +82,18 @@ def _print_boot_screen(resume: bool) -> None:
     )
     console.print(
         f"[{phosphor.DIM}]tip · plan mode rejects tool calls; the model "
-        f"describes instead — toggle with [/][{phosphor.accent()}]/plan[/]\n"
+        f"describes instead — toggle with [/][{phosphor.accent()}]/plan[/]"
     )
+    console.print()
+    console.print(render_session_rail(state))
+    console.print()
 
 
 def main() -> None:
     args = _parse_args()
     state: State = new_state()
     session = build_session(SLASH_COMMANDS, state)
-    _print_boot_screen(args.resume)
+    _print_boot_screen(state, args.resume)
     # State is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds `history`, so keeping a separate
     # local would silently drift once the first auto-trim fires.
