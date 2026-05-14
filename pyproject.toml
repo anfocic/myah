@@ -46,11 +46,12 @@ Homepage = "https://github.com/anfocic/myah"
 Issues = "https://github.com/anfocic/myah/issues"
 
 [tool.setuptools]
-# Flat layout: top-level modules (main, config, display, permissions)
-# alongside four packages (agent, providers, tools, repl). No src/ dir —
-# this is a pedagogical harness, not a library.
-py-modules = ["main", "config", "display", "permissions"]
-packages = ["agent", "providers", "tools", "repl"]
+# Flat layout: five top-level modules alongside five packages. No src/ dir —
+# this is a pedagogical harness, not a library. These lists must be complete:
+# pipx's editable install exposes only what's declared here (unlike a plain
+# `pip install -e .`, which puts the whole repo root on sys.path).
+py-modules = ["main", "config", "env", "permissions", "security"]
+packages = ["agent", "providers", "tools", "repl", "display"]
 
 [tool.ruff]
 line-length = 100
