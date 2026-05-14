@@ -58,6 +58,9 @@ def _buffer_text(instance) -> str:
 
 
 def test_boot_screen_renders_into_the_buffer(replapp):
+    # The boot screen prints lazily on the first render (once the real pane
+    # width is known); call it directly here since no Application is running.
+    replapp._print_boot_screen(resume=False)
     text = _buffer_text(replapp)
     assert "INITIALIZE" in text
     assert "READY" in text
@@ -90,7 +93,8 @@ def test_slash_command_is_dispatched(replapp):
 
 
 def test_clear_slash_wipes_the_scrollback_buffer(replapp):
-    assert replapp.buffer.lines  # boot screen is there
+    replapp._print_boot_screen(resume=False)
+    assert "INITIALIZE" in _buffer_text(replapp)  # boot screen is there
     replapp._on_accept(SimpleNamespace(text="/clear"))
     # /clear wiped history *and* the scrollback; only the post-dispatch
     # spacing/notice lines remain
