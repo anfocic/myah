@@ -58,6 +58,19 @@ def test_concurrent_writes_do_not_corrupt():
     assert set(buf.lines) == {"a", "b", "c", "d"}
 
 
+def test_mark_and_rewind_swap_streamed_content():
+    buf = RepaintBuffer()
+    buf.write("kept 1\nkept 2\n")
+    m = buf.mark()
+    assert m == 2
+    buf.write("raw token a\nraw token b\n")  # streamed content
+    assert buf.line_count() == 4
+    buf.rewind_to(m)  # drop the streamed lines
+    assert buf.lines == ["kept 1", "kept 2"]
+    buf.write("rendered\n")  # re-render in their place
+    assert buf.lines == ["kept 1", "kept 2", "rendered"]
+
+
 def test_null_status_supports_both_call_styles():
     s = _NullStatus()
     s.start()

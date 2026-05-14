@@ -46,6 +46,26 @@ def test_streaming_markdown_finish_appends_trailing_newline_when_missing():
     assert buf.getvalue().endswith("\n")
 
 
+def test_streaming_markdown_renders_markdown_on_finish_with_buffer_console():
+    from repl.screen import BufferConsole, RepaintBuffer
+
+    buf = RepaintBuffer()
+    console = BufferConsole(buf, width=80)
+    renderer = StreamingMarkdown(console)
+
+    # mid-stream: raw text lands verbatim, literal ** markers and all
+    renderer.update("**Verdict**\n\nShip ")
+    renderer.update("**Verdict**\n\nShip it.")
+    assert any("**Verdict**" in line for line in buf.lines)
+
+    # on finish: rewound and re-rendered as Markdown — markers gone, prose kept
+    renderer.finish("**Verdict**\n\nShip it.")
+    text = "\n".join(buf.lines)
+    assert "**Verdict**" not in text
+    assert "Verdict" in text
+    assert "Ship it." in text
+
+
 def test_tool_callbacks_render_name_args_and_duration(monkeypatch):
     record = Console(record=True, force_terminal=False, width=120)
     monkeypatch.setattr(tool_display, "console", record)

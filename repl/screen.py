@@ -100,6 +100,20 @@ class RepaintBuffer:
             self._partial = ""
         self.on_change()
 
+    def mark(self) -> int:
+        """A rewind point — the current committed line count. Pair with
+        `rewind_to()` to swap streamed content for its final form (raw tokens
+        → rendered Markdown at end of turn)."""
+        with self._lock:
+            return len(self.lines)
+
+    def rewind_to(self, mark: int) -> None:
+        """Drop committed lines back to `mark` and clear any partial tail."""
+        with self._lock:
+            del self.lines[mark:]
+            self._partial = ""
+        self.on_change()
+
 
 class ScrollState:
     """Tracks the main pane's vertical scroll position.
