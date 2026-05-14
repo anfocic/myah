@@ -160,11 +160,17 @@ python main.py
 Install as a shell command so `mia` runs from anywhere:
 
 ```bash
-pipx install -e .          # editable: code changes take effect with no reinstall
+pipx install -e . --pip-args="--config-settings editable_mode=compat"
 mia                        # start a session from any directory
 ```
 
 The `mia` console script is wired through `[project.scripts]` to `main:main`.
+The `editable_mode=compat` flag is required: setuptools' default (strict)
+editable finder doesn't expose this repo's flat-layout `py-modules` correctly,
+so imports like `from env import ...` fail. `compat` mode puts the repo root
+on `sys.path` the old way, which the flat layout depends on. The install stays
+editable either way — code changes take effect with no reinstall.
+
 Repo-relative resources (`vault/`, `logs/`) are anchored via `__file__`, so the
 command works regardless of the shell's cwd; the agent's own `cwd` awareness
 still tracks the directory you launched it from.
