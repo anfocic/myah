@@ -11,6 +11,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from display import phosphor
+
 # Map file extensions to Pygments language names that rich.syntax knows.
 # Unknown extensions fall back to plain text via the None case.
 _EXT_TO_LEXER = {
@@ -50,6 +52,9 @@ _WEB_RESULT_HEAD = re.compile(r"^\[(\d+)\] (.+)$")
 # shape of a file without flooding the terminal; model still gets the rest.
 PREVIEW_LINES = 15
 
+# Matches the "exit: N" trailer tools.bash appends.
+_BASH_EXIT_RE = re.compile(r"^exit:\s*(-?\d+)\s*$")
+
 
 def _lexer_for(path: str) -> str | None:
     _, ext = os.path.splitext(path)
@@ -75,7 +80,65 @@ def render_diff(console: Console, path: str, old: str, new: str) -> None:
     if not diff.strip():
         return
     syntax = Syntax(diff, "diff", theme="ansi_dark", word_wrap=True)
-    console.print(Panel(syntax, border_style="dim", padding=(0, 1)))
+    console.print(Panel(syntax, border_style=phosphor.DIM, padding=(0, 1)))
+
+
+def _split_bash_result(result: str) -> tuple[str, str, int | None]:
+    """Pull (stdout, stderr, exit_code) back out of the flat string
+    tools.bash emits — ``stdout`` / ``[stderr]\\n…`` / ``exit: N``, joined
+    with blank lines."""
+    lines = result.splitlines()
+    exit_code: int | None = None
+    body = lines
+    for i in range(len(lines) - 1, -1, -1):
+        m = _BASH_EXIT_RE.match(lines[i])
+        if m:
+            exit_code = int(m.group(1))
+            body = lines[:i]
+            break
+    stderr_idx = next(
+        (i for i, ln in enumerate(body) if ln.strip() == "[stderr]"), None
+    )
+    if stderr_idx is not None:
+        stdout = "\n".join(body[:stderr_idx]).strip("\n")
+        stderr = "\n".join(body[stderr_idx + 1:]).strip("\n")
+    else:
+        stdout = "\n".join(body).strip("\n")
+        stderr = ""
+    return stdout, stderr, exit_code
+
+
+def _clip_block(text: str, max_lines: int = PREVIEW_LINES) -> str:
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    return "\n".join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
+
+
+def render_bash_output(console: Console, result: str) -> None:
+    """Show bash stdout / stderr in the design's split-panel treatment:
+    stdout in a neutral-bordered panel, stderr in a red-bordered one. A
+    silent command (exit 0, no output) renders nothing — the ``⤷`` tail
+    already carries the exit code."""
+    stdout, stderr, _ = _split_bash_result(result)
+    if stdout:
+        console.print(
+            Panel(
+                escape(_clip_block(stdout)),
+                border_style=phosphor.DIM,
+                padding=(0, 1),
+            )
+        )
+    if stderr:
+        console.print(
+            Panel(
+                escape(_clip_block(stderr)),
+                title=f"[{phosphor.RED}]stderr[/]",
+                title_align="left",
+                border_style=phosphor.RED,
+                padding=(0, 1),
+            )
+        )
 
 
 def _strip_line_numbers(text: str) -> tuple[str, int]:
@@ -153,6 +216,9 @@ def render_web_search_results(console: Console, result: str) -> None:
         return
     lines: list[str] = []
     for n, title, url in entries:
-        lines.append(f"[dim]\\[{n}][/dim] [link={url}]{escape(title)}[/link]")
-        lines.append(f"    [dim]{escape(url)}[/dim]")
-    console.print(Panel("\n".join(lines), border_style="dim", padding=(0, 1)))
+        lines.append(
+            f"[{phosphor.DIM}]\\[{n}][/] "
+            f"[{phosphor.BRIGHT}][link={url}]{escape(title)}[/link][/]"
+        )
+        lines.append(f"    [{phosphor.DIM}]↳ {escape(url)}[/]")
+    console.print(Panel("\n".join(lines), border_style=phosphor.DIM, padding=(0, 1)))

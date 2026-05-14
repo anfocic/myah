@@ -214,7 +214,7 @@ def test_bash_permission_preview_includes_tool_id_and_command(monkeypatch):
 
     exported = console.export_text()
     assert allowed is False
-    assert "Permission requested" in exported
+    assert "PERMISSION REQUESTED" in exported  # HALT frame header
     assert "T07" in exported
     assert "shell command" in exported
     assert "pytest -q" in exported

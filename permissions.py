@@ -9,10 +9,11 @@ import json
 from pathlib import Path
 
 from prompt_toolkit.shortcuts import prompt as pt_prompt
+from rich import box
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from display import build_unified_diff
+from display import build_unified_diff, phosphor
 
 SENSITIVE_TOOLS = {
     "write_file", "edit_file", "bash", "git_checkout",
@@ -55,6 +56,35 @@ def _render_args(args) -> str:
 
 def _tool_id(meta: dict | None) -> str:
     return str((meta or {}).get("tool_id", ""))
+
+
+def _render_halt_frame(console, name: str, risk: str, tool_id: str) -> None:
+    """The design's HALT frame: a red double-ruled panel that stops the turn
+    cold for a permission decision. The detailed diff/command preview still
+    renders below it — the frame is the alarm, the preview is the evidence."""
+    rows = [
+        phosphor.bracket("HALT · PERMISSION REQUESTED", "red"),
+        "",
+        f"  [{phosphor.DIM}]tool[/]   [bold]{name}[/]",
+        f"  [{phosphor.DIM}]risk[/]   [{phosphor.RED}]{risk}[/]",
+    ]
+    if tool_id:
+        rows.append(f"  [{phosphor.DIM}]id[/]     [{phosphor.DIM}]{tool_id}[/]")
+    rows += [
+        "",
+        f"  [{phosphor.DIM}][[/][bold]y[/][{phosphor.DIM}]] allow once    "
+        f"[[/][bold]a[/][{phosphor.DIM}]] session    "
+        f"[[/][bold]n[/][{phosphor.DIM}]] deny[/]",
+    ]
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(rows),
+            border_style="red",
+            box=box.DOUBLE,
+            padding=(0, 1),
+        )
+    )
 
 
 def _content_stats(content: str) -> tuple[int, int]:
@@ -162,11 +192,7 @@ def check_permission(console, name: str, args, *, meta: dict | None = None) -> b
 
     tool_id = _tool_id(meta)
     risk = _RISK_LABELS.get(name, "sensitive action")
-    tool_prefix = f"[dim]{tool_id}[/dim] " if tool_id else ""
-    console.print(
-        f"\n[bold yellow]Permission requested[/bold yellow] "
-        f"{tool_prefix}[dim]for[/dim] [bold]{name}[/bold] [dim]· {risk}[/dim]"
-    )
+    _render_halt_frame(console, name, risk, tool_id)
     _print_permission_preview(console, name, args)
     try:
         choice = pt_prompt("Allow? [y]es / [n]o / [a]lways › ").strip().lower()

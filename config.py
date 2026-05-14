@@ -29,6 +29,7 @@ _models_cfg = _provider_cfg.get("models", {})
 _context_cfg = _file_cfg.get("context", {})
 _behavior_cfg = _file_cfg.get("behavior", {})
 _paths_cfg = _file_cfg.get("paths", {})
+_ui_cfg = _file_cfg.get("ui", {})
 
 # ── Provider ─────────────────────────────────────────────────────────────────
 MODEL_PROVIDER = env_override(
@@ -132,6 +133,18 @@ MAX_AGENT_ITERATIONS = int(env_override(
     _behavior_cfg.get("max_iterations", 50),
 ))
 SPIN_WINDOW = 3  # hardcoded — changing this breaks the spinning-call guard tests
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+# Phosphor accent hue. The whole TUI reads its dominant color from this one
+# knob — masthead, section brackets, prompt floor, tool glyphs. Themes
+# (dark/light/hc) are intentionally *not* a knob: rich's named ANSI colors
+# already track the user's terminal palette, so "max compat" is free.
+_VALID_ACCENTS = {"green", "amber", "cyan"}
+PHOSPHOR_ACCENT = env_override(
+    "MYAH_ACCENT", "ui.accent", _ui_cfg.get("accent", "green"),
+)
+if PHOSPHOR_ACCENT not in _VALID_ACCENTS:
+    PHOSPHOR_ACCENT = "green"
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 SESSION_FILE = os.path.expanduser(_paths_cfg.get("session_file", "~/.mia_session.json"))

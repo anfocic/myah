@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 
+from display import phosphor
 from display.previews import (
     _CAT_N_LINE,
     _parse_web_results,
     build_unified_diff,
+    render_bash_output,
     render_diff,
     render_file_preview,
     render_web_search_results,
@@ -16,26 +18,6 @@ from repl.console import console
 
 _SALIENT_ARG_KEYS = ("path", "command", "pattern", "query")
 _EXIT_RE = re.compile(r"^exit:\s*(-?\d+)\s*$", re.MULTILINE)
-
-# Tool category → bullet color for at-a-glance scannability.
-_TOOL_COLORS = {
-    "read_file": "cyan",
-    "glob": "cyan",
-    "grep": "cyan",
-    "web_search": "cyan",
-    "get_current_time": "green",
-    "harness_info": "green",
-    "edit_file": "yellow",
-    "write_file": "yellow",
-    "bash": "red",
-    "git_checkout": "red",
-    "spawn_subagent": "magenta",
-}
-
-
-def _tool_bullet(name: str) -> str:
-    color = _TOOL_COLORS.get(name, "dim")
-    return f"[{color}]●[/{color}]"
 
 
 def _args_preview(args: dict) -> str:
@@ -166,37 +148,48 @@ def _result_summary(name: str, args: dict, result: str) -> str:
 
 
 def on_tool_start(name: str, args: dict, meta: dict | None = None) -> None:
+    """Phosphor tool start: ``▶ NAME :: args``. The ``▶`` carries the tool's
+    category hue; a ``[i/total]`` prefix appears only on multi-tool turns."""
     preview = _args_preview(args)
-    bullet = _tool_bullet(name)
+    hue = phosphor.tool_hue(name)
     progress = ""
     if meta:
         total = meta.get("total")
         index = meta.get("index")
         if total and index and total > 1:
-            progress = f"[dim][{index}/{total}][/dim] "
+            progress = f"[{phosphor.DIM}][{index}/{total}][/] "
+    line = (
+        f"{progress}[{hue}]▶[/] [bold]{name.upper()}[/]"
+        f" [{phosphor.DIM}]::[/]"
+    )
     if preview:
-        console.print(f"{bullet} {progress}[bold]{name}[/bold] [dim]{preview}[/dim]")
-    else:
-        console.print(f"{bullet} {progress}[bold]{name}[/bold]")
+        line += f" [{phosphor.WHITE}]{preview}[/]"
+    console.print(line)
 
 
 def on_tool_end(name: str, args: dict, result: str, ok: bool, meta: dict | None = None) -> None:
+    """Phosphor tool tail: ``⤷ summary · ms``. Failures route to one of the
+    design's four error treatments — denied, plan-blocked, tool-raised, or a
+    generic first-line fallback."""
     duration = _duration_label(meta)
-    duration_tail = f" [dim]· {duration}[/dim]" if duration else ""
+    duration_tail = f" [{phosphor.DIM}]· {duration}[/]" if duration else ""
+    arrow = f"[{phosphor.accent()}]⤷[/]"
     if not ok:
         if result.startswith("User denied"):
-            console.print(f"  [dim]└[/dim] [red]denied[/red]{duration_tail}")
+            console.print(f"  {arrow} [{phosphor.RED}]denied by user[/]{duration_tail}")
         elif result.startswith("Plan mode:"):
-            console.print(f"  [dim]└[/dim] [yellow]blocked (plan mode)[/yellow]{duration_tail}")
+            console.print(
+                f"  {arrow} [{phosphor.YELLOW}]blocked · plan mode[/]{duration_tail}"
+            )
         elif result.startswith("Tool raised:"):
             first = result.split("\n", 1)[0]
-            console.print(f"  [dim]└[/dim] [red]{first}[/red]{duration_tail}")
+            console.print(f"  {arrow} [{phosphor.RED}]{first}[/]{duration_tail}")
         else:
             first = result.splitlines()[0] if result else "(empty)"
-            console.print(f"  [dim]└ {first}[/dim]{duration_tail}")
+            console.print(f"  {arrow} [{phosphor.RED}]{first}[/]{duration_tail}")
         return
     summary = _result_summary(name, args, result)
-    console.print(f"  [dim]└ {summary}[/dim]{duration_tail}")
+    console.print(f"  {arrow} [{phosphor.WHITE}]{summary}[/]{duration_tail}")
 
     if name == "edit_file" and args.get("old_string") is not None:
         render_diff(
@@ -207,5 +200,7 @@ def on_tool_end(name: str, args: dict, result: str, ok: bool, meta: dict | None 
         )
     elif name == "read_file" and args.get("path"):
         render_file_preview(console, str(args["path"]), result)
+    elif name == "bash":
+        render_bash_output(console, result)
     elif name == "web_search":
         render_web_search_results(console, result)

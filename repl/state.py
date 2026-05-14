@@ -11,6 +11,10 @@ from typing import NotRequired, TypedDict
 # to cover an interactive session without unbounded growth.
 REWIND_MAX_SNAPSHOTS = 20
 
+# How many recent per-turn metric dicts /stats keeps for its sparkline trend.
+# Matches the design's "last 8 turns" trend block.
+TURN_HISTORY_MAX = 8
+
 
 class State(TypedDict):
     history: list
@@ -27,6 +31,9 @@ class State(TypedDict):
     # renders these on demand so the REPL doesn't have to print a footer
     # line on every turn. Absent before the first turn completes.
     last_turn: NotRequired[dict]
+    # Rolling window of the last TURN_HISTORY_MAX per-turn metric dicts,
+    # feeding /stats' sparkline trend. main.py appends after each turn.
+    turn_history: deque
 
 
 def new_state() -> State:
@@ -38,5 +45,6 @@ def new_state() -> State:
         "plan_mode": False,
         "debug": False,
         "snapshots": deque(maxlen=REWIND_MAX_SNAPSHOTS),
+        "turn_history": deque(maxlen=TURN_HISTORY_MAX),
         "cwd": os.getcwd(),
     }
