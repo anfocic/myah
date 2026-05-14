@@ -148,6 +148,8 @@ The schema shape follows OpenAI function calling:
 
 ## Running
 
+Local dev (from the repo root):
+
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
@@ -155,10 +157,22 @@ ollama pull qwen2.5:7b-instruct
 python main.py
 ```
 
+Install as a shell command so `mia` runs from anywhere:
+
+```bash
+pipx install -e .          # editable: code changes take effect with no reinstall
+mia                        # start a session from any directory
+```
+
+The `mia` console script is wired through `[project.scripts]` to `main:main`.
+Repo-relative resources (`vault/`, `logs/`) are anchored via `__file__`, so the
+command works regardless of the shell's cwd; the agent's own `cwd` awareness
+still tracks the directory you launched it from.
+
 Resume the last saved session:
 
 ```bash
-python main.py --resume
+python main.py --resume    # or: mia --resume
 ```
 
 Start on a hosted provider instead of Ollama:

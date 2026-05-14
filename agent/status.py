@@ -10,7 +10,9 @@ from pathlib import Path
 
 from providers import Usage, get_active_provider
 
-LOG_FILE = Path("logs/agent.jsonl")
+# Repo-anchored, not cwd-relative: `mia` runs from anywhere in the shell,
+# so logs must land next to the source, not wherever the user happened to be.
+LOG_FILE = Path(__file__).resolve().parent.parent / "logs" / "agent.jsonl"
 
 
 def status_line(
