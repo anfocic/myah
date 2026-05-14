@@ -143,6 +143,14 @@ def masthead(mode: str = "full", *, subtitle: str = "personal harness") -> str:
 
 _STATE_HUES = {"READY": None, "BOOT": None, "STREAM": YELLOW, "HOLD": RED}
 
+# Content width budget for the rail — sized to sit in a ~32-column pinned
+# sidebar (`repl/app.py`) without wrapping.
+RAIL_CONTENT_WIDTH = 30
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 
 def session_rail(
     *,
@@ -155,9 +163,8 @@ def session_rail(
 ) -> str:
     """The left-rail session console as a stacked block.
 
-    The web mock pins this as a fixed side panel; a scrollback REPL can't
-    (see ``display/streaming.py`` on why the harness stays off the alt
-    screen), so it renders on the boot screen and on demand via ``/session``.
+    Sized to fit a ~32-column pinned sidebar (`repl/app.py`'s full-screen
+    layout) and also to render inline on the boot screen / `/session`.
     """
     a = accent()
     state_hue = _STATE_HUES.get(sess_state, a) or a
@@ -165,23 +172,23 @@ def session_rail(
 
     lines = [
         bracket("SESSION"),
-        f"  [{DIM}]state[/]   [{state_hue} bold]{sess_state}[/]",
-        f"  [{DIM}]branch[/]  [{MAGENTA}]⎇ {branch or '(detached)'}[/]",
-        f"  [{DIM}]turns[/]   [{WHITE}]{turns:03d}[/]",
-        f"  [{DIM}]model[/]   [{WHITE}]{provider_label or '(none)'}[/]",
+        f"  [{DIM}]state [/] [{state_hue} bold]{sess_state}[/]",
+        f"  [{DIM}]branch[/] [{MAGENTA}]⎇ {_clip(branch or '(detached)', 16)}[/]",
+        f"  [{DIM}]turns [/] [{WHITE}]{turns:03d}[/]",
+        f"  [{DIM}]model [/] [{WHITE}]{_clip(provider_label or '(none)', 18)}[/]",
         "",
         bracket("CTX"),
         f"  {meter(ctx_used, ctx_total)}",
         f"  [{DIM}]{pct:.0f}%  {ctx_used:,} / {ctx_total:,}[/]",
         "",
         bracket("TOOLS"),
-        f"  [{CYAN}]●[/] [{DIM}]read[/]   [{WHITE}]read_file glob grep web_search[/]",
-        f"  [{YELLOW}]●[/] [{DIM}]write[/]  [{WHITE}]edit_file write_file[/]",
-        f"  [{RED}]●[/] [{DIM}]shell[/]  [{WHITE}]bash git_checkout[/]",
-        f"  [{MAGENTA}]●[/] [{DIM}]agent[/]  [{WHITE}]spawn_subagent[/]",
+        f"  [{CYAN}]●[/] [{DIM}]read [/]  [{YELLOW}]●[/] [{DIM}]write[/]",
+        f"  [{RED}]●[/] [{DIM}]shell[/]  [{MAGENTA}]●[/] [{DIM}]agent[/]",
         "",
-        f"  [{DIM}]esc[/]  [{DIM}]abort turn[/]   "
-        f"[{DIM}]^c[/]  [{DIM}]clear input[/]   "
-        f"[{DIM}]^d[/]  [{DIM}]exit[/]",
+        bracket("KEYS"),
+        f"  [{DIM}]esc[/] [{DIM}]abort turn[/]",
+        f"  [{DIM}]^c [/] [{DIM}]clear · abort[/]",
+        f"  [{DIM}]^d [/] [{DIM}]exit[/]",
+        f"  [{DIM}]pgup/pgdn[/] [{DIM}]scroll[/]",
     ]
     return "\n".join(lines)
