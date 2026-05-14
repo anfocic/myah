@@ -241,13 +241,15 @@ def build_transmission_header(state: State) -> str:
     return " ".join(parts)
 
 
-def render_session_rail(state: State) -> str:
+def render_session_rail(state: State, sess_state: str = "READY") -> str:
     """The Phosphor left-rail session console, resolved from current state.
-    Shared by the boot screen and the `/session` command — a scrollback REPL
-    can't pin it as a side panel, so it renders inline on demand instead."""
+
+    `sess_state` (READY / STREAM / HOLD / BOOT) drives the state pill's hue.
+    The full-screen REPL re-renders the rail every frame with the live state;
+    the boot screen and `/session` command use the READY default."""
     provider = get_active_provider()
     return phosphor.session_rail(
-        sess_state="READY",
+        sess_state=sess_state,
         branch=_current_branch(),
         turns=len(state["history"]) // 2,
         ctx_used=state.get("ctx_used", 0),

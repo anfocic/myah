@@ -179,13 +179,33 @@ def _allow_key(name: str, args) -> str:
     return f"{name}:{encoded}"
 
 
+def _default_ask_permission(prompt_text: str) -> str:
+    """Default permission asker — a one-shot `prompt_toolkit` prompt. Works
+    for the inline REPL, subagents, and tests. The full-screen REPL replaces
+    this via `set_permission_asker` with an Event-based bridge to its UI
+    thread, since a nested `pt_prompt` can't run inside a live Application."""
+    return pt_prompt(prompt_text)
+
+
+# Swappable so the run-context (inline / full-screen / test) decides how the
+# y/n/a decision is collected, while `check_permission` stays UI-agnostic.
+_ask_permission = _default_ask_permission
+
+
+def set_permission_asker(asker) -> None:
+    """Install a custom permission asker: `asker(prompt_text) -> str`, where
+    the return's leading char is significant ('y' / 'n' / 'a')."""
+    global _ask_permission
+    _ask_permission = asker
+
+
 def check_permission(console, name: str, args, *, meta: dict | None = None) -> bool:
     """Return True if the tool may run. Prompts the user for sensitive tools.
 
-    The prompt uses `prompt_toolkit.shortcuts.prompt` directly — a one-shot
-    session that slots cleanly under `patch_stdout` because the outer
-    PromptSession has already returned control to the agent loop. No spinner
-    to stop/restart now that rich.Status is retired (§TUI refactor)."""
+    The y/n/a decision is collected through the swappable `_ask_permission`
+    hook — a one-shot `pt_prompt` by default, or the full-screen app's
+    UI-thread bridge when that's installed. The HALT frame and preview always
+    render through the passed-in `console`."""
     key = _allow_key(name, args)
     if name not in SENSITIVE_TOOLS or key in _session_allowed:
         return True
@@ -195,7 +215,7 @@ def check_permission(console, name: str, args, *, meta: dict | None = None) -> b
     _render_halt_frame(console, name, risk, tool_id)
     _print_permission_preview(console, name, args)
     try:
-        choice = pt_prompt("Allow? [y]es / [n]o / [a]lways › ").strip().lower()
+        choice = _ask_permission("Allow? [y]es / [n]o / [a]lways › ").strip().lower()
     except (KeyboardInterrupt, EOFError):
         # Treat an aborted permission prompt as a denial — safer default.
         return False

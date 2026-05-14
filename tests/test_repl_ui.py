@@ -22,6 +22,7 @@ from repl.ui import (
     build_rprompt,
     build_transmission_header,
     build_turn_footer,
+    render_session_rail,
 )
 
 
@@ -156,6 +157,16 @@ def test_build_transmission_header_uses_turn_count_and_badges(monkeypatch):
     assert "░▒▓" in header
     assert "ctx 50%" in header
     assert "debug" in header
+
+
+def test_render_session_rail_threads_sess_state_into_the_pill():
+    state = new_state()
+    ready = render_session_rail(state)
+    stream = render_session_rail(state, "STREAM")
+    assert "READY" in ready
+    # STREAM drives the yellow-bold state pill; READY does not
+    assert "[yellow bold]STREAM[/]" in stream
+    assert "[yellow bold]" not in ready
 
 
 def test_build_turn_footer_includes_ttft_and_rate():
