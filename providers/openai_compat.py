@@ -287,8 +287,16 @@ def _parse_sse(lines: Iterator[str]) -> Iterator[StreamChunk]:
         # silently discard the model's actual output: for qwen3 in
         # thinking mode, `content` can be empty while `reasoning_content`
         # holds hundreds of tokens.
-        if delta.get("reasoning_content"):
-            yield StreamChunk(reasoning_delta=delta["reasoning_content"])
+        #
+        # The key is not standardized: LM Studio/DeepSeek use
+        # `reasoning_content`, while OpenRouter-style proxies (OpenCode,
+        # which fronts Moonshot/kimi) use `reasoning`. Dropping the latter
+        # left `turn.reasoning` empty, so kimi's thinking-mode tool-call
+        # messages went out with `reasoning_content: ""` and Moonshot
+        # rejected the replay with a 400.
+        reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning_delta:
+            yield StreamChunk(reasoning_delta=reasoning_delta)
 
         for tc in delta.get("tool_calls") or []:
             idx = tc.get("index", 0)

@@ -156,6 +156,32 @@ def test_sse_reasoning_content_becomes_reasoning_delta():
     assert all(not (c.reasoning_delta and c.content_delta) for c in chunks)
 
 
+def test_sse_openrouter_reasoning_key_becomes_reasoning_delta():
+    """OpenRouter-style proxies (OpenCode, which fronts Moonshot/kimi)
+    stream chain-of-thought on `delta.reasoning`, not `reasoning_content`.
+    Missing it left `turn.reasoning` empty, so kimi's thinking-mode
+    tool-call messages replayed with `reasoning_content: ""` and Moonshot
+    rejected them with a 400.
+    """
+    lines = iter([
+        "data: " + json.dumps({
+            "choices": [{"delta": {"reasoning": "let me think: "}}]
+        }),
+        "data: " + json.dumps({
+            "choices": [{"delta": {"reasoning": "call the tool."}}]
+        }),
+        "data: " + json.dumps({
+            "choices": [{"delta": {"content": "Answer."}}]
+        }),
+        "data: [DONE]",
+    ])
+    chunks = list(_parse_sse(lines))
+    reasoning = "".join(c.reasoning_delta for c in chunks if c.reasoning_delta)
+    content = "".join(c.content_delta for c in chunks if c.content_delta)
+    assert reasoning == "let me think: call the tool."
+    assert content == "Answer."
+
+
 def test_bad_streamed_tool_call_json_raises_provider_error():
     lines = iter([
         "data: " + json.dumps({
