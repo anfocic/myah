@@ -60,13 +60,29 @@ def test_tool_callbacks_render_name_args_and_duration(monkeypatch):
     )
 
     exported = record.export_text()
-    assert "bash" in exported
+    assert "BASH" in exported
     assert "pytest -q" in exported
     assert "exit 0" in exported
     assert "42ms" in exported
-    # Tree glyphs frame the block
-    assert "●" in exported
-    assert "└" in exported
+    # Phosphor glyphs frame the block
+    assert "▶" in exported
+    assert "⤷" in exported
+    # bash stdout lands in its own panel
+    assert "all good" in exported
+
+
+def test_tool_callbacks_render_error_tails(monkeypatch):
+    record = Console(record=True, force_terminal=False, width=120)
+    monkeypatch.setattr(tool_display, "console", record)
+
+    on_tool_end("bash", {}, "User denied this tool call.", False, {})
+    on_tool_end("edit_file", {}, "Plan mode: tool call rejected.", False, {})
+    on_tool_end("read_file", {}, "Tool raised: FileNotFoundError", False, {})
+
+    exported = record.export_text()
+    assert "denied by user" in exported
+    assert "blocked · plan mode" in exported
+    assert "Tool raised: FileNotFoundError" in exported
 
 
 def test_tool_callbacks_render_edit_diff_summary(monkeypatch):

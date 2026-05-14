@@ -20,8 +20,8 @@ from repl.ui import (
     SlashCompleter,
     build_prompt,
     build_rprompt,
+    build_transmission_header,
     build_turn_footer,
-    build_turn_header,
 )
 
 
@@ -32,9 +32,6 @@ def _stub_branch(monkeypatch):
     prompt and break `test_build_prompt_omits_badges_when_clean`."""
     monkeypatch.setattr(ui, "_current_branch", lambda: None)
     monkeypatch.setattr(ui, "get_context_size", lambda: 4096)
-    # Pin the cwd basename so the rendered-string assertions don't depend
-    # on the test runner's working directory (locally `mia`, in CI `myah`).
-    monkeypatch.setattr(ui, "_short_cwd", lambda cwd: "mia")
     monkeypatch.setattr(
         ui,
         "get_active_provider",
@@ -65,12 +62,13 @@ def _rendered(formatted_text) -> str:
     return "".join(text for _, text in formatted_text)
 
 
-def test_build_prompt_includes_plan_badge_when_plan_mode_on():
+def test_build_prompt_renders_phosphor_floor():
     state = new_state()
     state["plan_mode"] = True
     rendered = _rendered(build_prompt(state))
-    assert "You" in rendered
-    assert "›" in rendered
+    assert "myah@local" in rendered
+    assert rendered.rstrip().endswith("$")
+    # mode badges live on the rprompt, never on the floor itself
     assert "plan" not in rendered
 
 
@@ -84,12 +82,13 @@ def test_build_prompt_omits_badges_when_clean():
 
 
 def test_build_rprompt_order_is_branch_pct_model(monkeypatch):
-    """Layout contract: `cwd · branch · ctx% · provider:model`, left-to-right."""
+    """Layout contract: `branch · ctx% · provider:model`, left-to-right.
+    cwd lives on the prompt floor now, not here."""
     monkeypatch.setattr(ui, "_current_branch", lambda: "feat/rprompt-pass")
     state = new_state()
     state["ctx_used"] = 1024
     rendered = _rendered(build_rprompt(state))
-    assert rendered == "mia · feat/rprompt-pass · 25% · ollama:qwen2.5:7b-instruct"
+    assert rendered == "feat/rprompt-pass · 25% · ollama:qwen2.5:7b-instruct"
 
 
 def test_build_rprompt_keeps_full_model_name_with_org(monkeypatch):
@@ -109,8 +108,17 @@ def test_build_rprompt_keeps_full_model_name_with_org(monkeypatch):
 def test_build_rprompt_omits_branch_segment_when_not_in_repo():
     state = new_state()
     rendered = _rendered(build_rprompt(state))
-    # cwd · ctx% · model (no branch segment when not in a git repo).
-    assert rendered == "mia · 0% · ollama:qwen2.5:7b-instruct"
+    # ctx% · model (no branch segment when not in a git repo, no cwd).
+    assert rendered == "0% · ollama:qwen2.5:7b-instruct"
+
+
+def test_build_rprompt_appends_mode_pill():
+    state = new_state()
+    state["plan_mode"] = True
+    state["debug"] = True
+    rendered = _rendered(build_rprompt(state))
+    assert "[PLAN]" in rendered
+    assert "[DEBUG]" in rendered
 
 
 def test_build_rprompt_gradient_shifts_with_ctx():
@@ -132,8 +140,7 @@ def test_build_rprompt_gradient_shifts_with_ctx():
     assert high.startswith("fg:#")
 
 
-def test_build_turn_header_uses_turn_count_and_badges(monkeypatch):
-    monkeypatch.setattr(ui, "_current_branch", lambda: "main")
+def test_build_transmission_header_uses_turn_count_and_badges(monkeypatch):
     state = new_state()
     state["history"] = [
         {"role": "user", "content": "one"},
@@ -144,11 +151,10 @@ def test_build_turn_header_uses_turn_count_and_badges(monkeypatch):
     ]
     state["ctx_used"] = 2048
     state["debug"] = True
-    header = build_turn_header(state)
-    assert "Turn 3" in header
-    assert "main" in header
-    assert "ollama:qwen2.5:7b-instruct" in header
-    assert "2,048/4,096" in header
+    header = build_transmission_header(state)
+    assert "TRANSMISSION 003" in header
+    assert "░▒▓" in header
+    assert "ctx 50%" in header
     assert "debug" in header
 
 

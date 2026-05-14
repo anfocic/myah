@@ -11,6 +11,7 @@ from agent import apply_summary, compact_history
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens
 from config import get_context_size
+from display import phosphor
 from providers import (
     SUPPORTED_PROVIDERS,
     ProviderError,
@@ -25,7 +26,7 @@ from repl.persistence import wipe_session
 from repl.state import State
 from repl.tool_registry import TOOL_NAMES
 from repl.tool_registry import TOOL_SCHEMAS as REGISTERED_TOOLS
-from repl.ui import ctx_tag
+from repl.ui import _current_branch, ctx_tag
 
 
 def _config_value_repr(val) -> str:
@@ -105,11 +106,37 @@ def cmd_config(state: State, arg: str = "") -> None:
     console.print("\n".join(lines))
 
 
+# Slash commands grouped for /help display. Dispatch still goes through the
+# flat SLASH_COMMANDS dict; this only controls how the list is presented.
+_HELP_GROUPS: list[tuple[str, list[str]]] = [
+    ("info", ["/help", "/context", "/profile", "/stats", "/session"]),
+    ("control", ["/cd", "/config", "/clear"]),
+    ("modes", ["/plan", "/debug"]),
+    ("undo", ["/retry", "/compact", "/rewind"]),
+    ("provider", ["/model", "/eval"]),
+]
+
+
 def cmd_help(state: State, arg: str = "") -> None:
-    lines = ["[bold]Commands:[/bold]"]
-    for name, (_, desc) in SLASH_COMMANDS.items():
-        lines.append(f"  [cyan]{name}[/cyan] — {desc}")
-    lines.append("  [cyan]exit[/cyan] — quit")
+    a = phosphor.accent()
+    lines = [
+        phosphor.bracket("COMMANDS"),
+        f"[{phosphor.DIM}]· dispatched by repl/commands.py — the model never "
+        f"sees them[/]",
+    ]
+    for label, names in _HELP_GROUPS:
+        lines.append(f"\n[{phosphor.DIM}]── {label} ──[/]")
+        for name in names:
+            entry = SLASH_COMMANDS.get(name)
+            if entry is None:
+                continue
+            desc = entry[1]
+            lines.append(f"  [{a}]{name:<11}[/] [{phosphor.WHITE}]{desc}[/]")
+    lines.append(f"\n[{phosphor.DIM}]── exit ──[/]")
+    lines.append(
+        f"  [{phosphor.RED}]{'exit':<11}[/] "
+        f"[{phosphor.WHITE}]quit the REPL · ^D also works[/]"
+    )
     console.print("\n".join(lines))
 
 
@@ -155,34 +182,96 @@ def cmd_context(state: State, arg: str = "") -> None:
     tag = ctx_tag(count, get_context_size())
     plan = "[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"
     console.print(
-        f"[bold]model:[/bold] {provider.model} [dim]({provider.name})[/dim]\n"
-        f"[bold]num_ctx:[/bold] {get_context_size():,}\n"
-        f"[bold]ctx (next turn):[/bold] {count:,} {tag} [dim]· {source}[/dim]\n"
+        f"{phosphor.bracket('CONTEXT PROFILE')} "
+        f"[{phosphor.DIM}]· {provider.model} · num_ctx {get_context_size():,} "
+        f"· {source}[/]\n"
+        f"[bold]ctx (next turn):[/bold] {count:,} {tag}\n"
         f"[bold]history turns:[/bold] {len(state['history']) // 2}\n"
         f"[bold]plan mode:[/bold] {plan}\n"
         f"[bold]tools:[/bold] {', '.join(TOOL_NAMES)}"
     )
 
 
+_STAT_BAR_WIDTH = 24
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def _stat_bar(value: float, cap: float, max_: float) -> str:
+    """A horizontal mini-bar. `cap` is the "good below this" line; values
+    past it shade accent → yellow → red (the design's /stats treatment)."""
+    ratio = min(1.0, value / max_) if max_ > 0 else 0.0
+    filled = round(ratio * _STAT_BAR_WIDTH)
+    if value <= cap:
+        color = phosphor.accent()
+    elif value <= cap * 1.5:
+        color = phosphor.YELLOW
+    else:
+        color = phosphor.RED
+    return (
+        f"[{color}]{'█' * filled}[/]"
+        f"[{phosphor.DIM}]{'░' * (_STAT_BAR_WIDTH - filled)}[/]"
+    )
+
+
+def _sparkline(values: list[float]) -> str:
+    """Map a series onto the ▁▂▃▄▅▆▇█ block ramp, scaled to its own range."""
+    if not values:
+        return ""
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    return "".join(_SPARK[min(7, int((v - lo) / span * 7))] for v in values)
+
+
 def cmd_stats(state: State, arg: str = "") -> None:
-    """Show the last turn's metrics. Captured by main.py into state["last_turn"]
-    now that the per-turn footer was dropped from the REPL output."""
+    """The Phosphor /stats dashboard: mini-bars for the last turn's metrics
+    over a sparkline trend of the recent window. Captured by main.py into
+    state["last_turn"] / state["turn_history"]."""
     last = state.get("last_turn")
     if not last:
-        console.print("[dim]↳ no completed turn yet[/dim]")
+        console.print(f"[{phosphor.DIM}]↳ no completed turn yet[/]")
         return
-    tag = ctx_tag(last["ctx_used"], get_context_size())
-    parts = [
-        f"[bold]ctx:[/bold] {last['ctx_used']:,}/{get_context_size():,} {tag}",
-        f"[bold]wall:[/bold] {last['elapsed_s']:.1f}s",
+    ctx_size = get_context_size()
+    a = phosphor.accent()
+
+    console.print(phosphor.bracket("LAST TURN"))
+    rows: list[tuple[str, str, str]] = [
+        ("ctx", _stat_bar(last["ctx_used"], 0.8 * ctx_size, ctx_size),
+         f"{last['ctx_used']:,} / {ctx_size:,}"),
+        ("wall", _stat_bar(last["elapsed_s"], 5, 10), f"{last['elapsed_s']:.1f}s"),
     ]
     if last.get("ttft_ms") is not None:
-        parts.append(f"[bold]ttft:[/bold] {last['ttft_ms']}ms")
+        rows.append(("ttft", _stat_bar(last["ttft_ms"], 500, 2000),
+                     f"{last['ttft_ms']}ms"))
     if last.get("tok_per_s"):
-        parts.append(f"[bold]rate:[/bold] {last['tok_per_s']:.0f} tok/s")
+        rows.append(("rate", _stat_bar(last["tok_per_s"], 30, 80),
+                     f"{last['tok_per_s']:.0f} tok/s"))
     if last.get("completion_tokens"):
-        parts.append(f"[bold]gen:[/bold] {last['completion_tokens']} tok")
-    console.print(" · ".join(parts))
+        rows.append(("gen", _stat_bar(last["completion_tokens"], 2000, 4096),
+                     f"{last['completion_tokens']} tok"))
+    for label, bar, value in rows:
+        console.print(
+            f"  [{phosphor.DIM}]{label:<6}[/] {bar}  [{phosphor.WHITE}]{value}[/]"
+        )
+
+    turns = list(state.get("turn_history", []))
+    if len(turns) >= 2:
+        console.print(f"\n{phosphor.bracket(f'TREND · LAST {len(turns)} TURNS')}")
+        ctx_pcts = [t["ctx_used"] / ctx_size * 100 for t in turns]
+        walls = [t["elapsed_s"] for t in turns]
+        console.print(
+            f"  [{phosphor.DIM}]ctx %[/]  [{a}]{_sparkline(ctx_pcts)}[/]  "
+            f"[{phosphor.DIM}]{ctx_pcts[0]:.0f} → {ctx_pcts[-1]:.0f} %[/]"
+        )
+        console.print(
+            f"  [{phosphor.DIM}]wall[/]   [{a}]{_sparkline(walls)}[/]  "
+            f"[{phosphor.DIM}]{walls[0]:.1f} → {walls[-1]:.1f} s[/]"
+        )
+        rates = [t["tok_per_s"] for t in turns if t.get("tok_per_s")]
+        if len(rates) >= 2:
+            console.print(
+                f"  [{phosphor.DIM}]tok/s[/]  [{a}]{_sparkline(rates)}[/]  "
+                f"[{phosphor.DIM}]{rates[0]:.0f} → {rates[-1]:.0f} tok/s[/]"
+            )
 
 
 def cmd_plan(state: State, arg: str = "") -> None:
@@ -270,21 +359,23 @@ _PROFILE_LABEL_LEN = 10
 
 
 def _profile_bar(tokens: int, num_ctx: int) -> str:
-    """Render a stacked-block bar showing `tokens` filled out of `num_ctx`.
-    Clamps at the bar width, so over-budget states show a full bar (not a
-    wrapped one) — the numeric readout next to it still shows the overflow."""
+    """Render a stacked-block bar showing `tokens` filled out of `num_ctx`,
+    the filled run in the accent hue. Clamps at the bar width, so over-budget
+    states show a full bar (not a wrapped one) — the numeric readout next to
+    it still shows the overflow."""
     if num_ctx <= 0:
-        return "░" * _PROFILE_BAR_WIDTH
+        return f"[{phosphor.DIM}]{'░' * _PROFILE_BAR_WIDTH}[/]"
     ratio = max(0.0, min(1.0, tokens / num_ctx))
     filled = round(_PROFILE_BAR_WIDTH * ratio)
-    return "█" * filled + "░" * (_PROFILE_BAR_WIDTH - filled)
+    return (
+        f"[{phosphor.accent()}]{'█' * filled}[/]"
+        f"[{phosphor.DIM}]{'░' * (_PROFILE_BAR_WIDTH - filled)}[/]"
+    )
 
 
 def _profile_row(label: str, tokens: int, num_ctx: int) -> str:
-    # No square brackets around the bar — rich parses `[text]` as markup
-    # (e.g. `[bold]…[/bold]`) and silently eats anything that isn't a known
-    # style. `[system ████]` → gone. Whitespace separation reads fine and
-    # sidesteps the parser.
+    # The bar carries proper rich markup tags (not bare `[text]`, which the
+    # parser would eat); the surrounding columns stay plain.
     pct = (tokens / num_ctx * 100) if num_ctx > 0 else 0.0
     bar = _profile_bar(tokens, num_ctx)
     return f"  {label:<{_PROFILE_LABEL_LEN}} {bar}  {tokens:>5,}  {pct:>4.1f}%"
@@ -352,10 +443,12 @@ def cmd_profile(state: State, arg: str = "") -> None:
     ]
 
     title = (
-        f"[bold]Context profile[/bold] [dim]· {provider.model} "
-        f"({provider.name}) · num_ctx={ctx_size:,}[/dim]"
+        f"{phosphor.bracket('CONTEXT PROFILE')} [{phosphor.DIM}]· "
+        f"{provider.model} ({provider.name}) · num_ctx={ctx_size:,}[/]"
     )
-    console.print(Panel("\n".join(lines), title=title, border_style="dim", padding=(1, 2)))
+    console.print(
+        Panel("\n".join(lines), title=title, border_style=phosphor.DIM, padding=(1, 2))
+    )
 
 
 def cmd_eval(state: State, arg: str = "") -> None:
@@ -447,16 +540,29 @@ def cmd_model(state: State, arg: str = "") -> None:
     """
     current = get_active_provider()
     if not arg.strip():
-        console.print(f"[bold]current:[/bold] {current.model} [dim]({current.name})[/dim]")
+        a = phosphor.accent()
+        console.print(phosphor.bracket("MODEL REGISTRY"))
+        console.print(
+            f"  [{phosphor.DIM}]active[/]  [{a} bold]★ {current.model}[/] "
+            f"[{phosphor.DIM}]· {current.name}[/]"
+        )
         tags = list_ollama_models()
         if tags:
-            console.print("[bold]ollama (local):[/bold]")
+            console.print(f"\n  [{a} bold]ollama[/] [{phosphor.DIM}]· local daemon[/]")
             for t in tags:
-                marker = "[cyan]*[/cyan] " if t == current.model else "  "
-                console.print(f"  {marker}{t}")
+                if t == current.model:
+                    console.print(f"  [{a}]●[/] [{phosphor.BRIGHT}]{t}[/]")
+                else:
+                    console.print(f"  [{phosphor.DIM}]◌[/] [{phosphor.WHITE}]{t}[/]")
         else:
-            console.print("[dim]↳ no ollama daemon reachable (or no models pulled)[/dim]")
-        console.print("[dim]↳ swap with /model <name> or /model <provider>:<name>[/dim]")
+            console.print(
+                f"[{phosphor.DIM}]↳ no ollama daemon reachable (or no models "
+                f"pulled)[/]"
+            )
+        console.print(
+            f"\n  [{phosphor.DIM}]⤷ /model <name> · swap within active provider[/]\n"
+            f"  [{phosphor.DIM}]⤷ /model <provider>:<name> · switch backend[/]"
+        )
         return
 
     # Parse "<provider>:<model>" vs plain "<model>" (keep current provider).
@@ -513,9 +619,29 @@ def cmd_cd(state: State, arg: str = "") -> None:
     console.print(state["cwd"])
 
 
+def cmd_session(state: State, arg: str = "") -> None:
+    """Render the Phosphor left-rail session console on demand.
+
+    The web mock pins this as a fixed side panel; a scrollback REPL can't
+    (see display/streaming.py on staying off the alt screen), so the rail
+    prints here and on the boot screen instead."""
+    provider = get_active_provider()
+    console.print(
+        phosphor.session_rail(
+            sess_state="READY",
+            branch=_current_branch(),
+            turns=len(state["history"]) // 2,
+            ctx_used=state.get("ctx_used", 0),
+            ctx_total=get_context_size(),
+            provider_label=f"{provider.name}:{provider.model}",
+        )
+    )
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
     "/cd": (cmd_cd, "change the harness working directory (or print it with no argument)"),
+    "/session": (cmd_session, "show the session console (state/ctx/tools rail)"),
     "/config": (cmd_config, "show/reload/edit configuration (reload | path | edit)"),
     "/clear": (cmd_clear, "reset conversation history + wipe saved session"),
     "/context": (cmd_context, "show context window usage + harness info"),

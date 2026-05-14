@@ -13,8 +13,8 @@ import time
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from agent import apply_summary, run_agent, trim_history
-from config import get_context_size
-from display import on_tool_end, on_tool_start
+from config import INPUT_HISTORY_FILE, get_context_size
+from display import on_tool_end, on_tool_start, phosphor
 from permissions import check_permission
 from providers import get_active_provider
 from repl.commands import SLASH_COMMANDS, handle_slash
@@ -26,7 +26,12 @@ from repl.persistence import (
 )
 from repl.state import State, new_state
 from repl.tool_registry import TOOL_SCHEMAS, make_execute_tool
-from repl.ui import build_prompt, build_session, build_turn_footer, build_turn_header
+from repl.ui import (
+    build_prompt,
+    build_session,
+    build_transmission_header,
+    build_turn_footer,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -39,15 +44,52 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _ok_line(label: str, detail: str) -> str:
+    """One Phosphor boot line — `[ok]  label  detail`. The literal `[ok]` is
+    escaped so rich's markup parser doesn't read it as a (bogus) style tag."""
+    return (
+        f"[{phosphor.GREEN}]\\[ok][/]   "
+        f"[{phosphor.DIM}]{label:<8}[/] [{phosphor.WHITE}]{detail}[/]"
+    )
+
+
+def _print_boot_screen(resume: bool) -> None:
+    """The Phosphor boot screen: masthead, an INITIALIZE checklist of the
+    harness's real startup state, then a READY bracket. Replaces the old
+    one-line `Myah ready.` banner."""
+    provider = get_active_provider()
+    console.print(phosphor.masthead("full"))
+    console.print()
+    console.print(phosphor.bracket("INITIALIZE"))
+    console.print(_ok_line("config", "merged defaults · files · env"))
+    console.print(_ok_line("provider", f"{provider.name} · {provider.model}"))
+    console.print(_ok_line("model", f"{provider.model} · {get_context_size():,} ctx"))
+    console.print(
+        _ok_line("tools", f"{len(TOOL_SCHEMAS)} registered · read · write · shell · agent")
+    )
+    session_state = "resume requested" if resume else "fresh"
+    if not resume and has_saved_session():
+        session_state += " · prior session on disk · --resume to load"
+    console.print(_ok_line("session", session_state))
+    console.print(_ok_line("history", INPUT_HISTORY_FILE))
+    console.print()
+    console.print(phosphor.bracket("READY"))
+    console.print(
+        f"[{phosphor.WHITE}]Type [{phosphor.accent()} bold]/help[/] for commands · "
+        f"[{phosphor.accent()} bold]/model[/] to swap · "
+        f"[{phosphor.DIM}]exit[/] to quit.[/]"
+    )
+    console.print(
+        f"[{phosphor.DIM}]tip · plan mode rejects tool calls; the model "
+        f"describes instead — toggle with [/][{phosphor.accent()}]/plan[/]\n"
+    )
+
+
 def main() -> None:
     args = _parse_args()
     state: State = new_state()
     session = build_session(SLASH_COMMANDS, state)
-    console.print(
-        "[bold]Myah ready.[/bold] "
-        "Type [italic dim]/help[/italic dim] for commands, "
-        "[italic dim]exit[/italic dim] to quit.\n"
-    )
+    _print_boot_screen(args.resume)
     # State is the single source of truth so slash commands always see the
     # latest values. trim_history rebinds `history`, so keeping a separate
     # local would silently drift once the first auto-trim fires.
@@ -112,7 +154,7 @@ def main() -> None:
                     continue
 
             start = time.time()
-            console.print(build_turn_header(state))
+            console.print(build_transmission_header(state))
             # Snapshot pre-turn history so /rewind can restore it. Deep copy
             # because history entries are dicts; a shallow copy could alias and
             # mutate the snapshot when the next turn rebinds. The deque drops
@@ -147,7 +189,11 @@ def main() -> None:
                     ):
                         state["history"] = apply_summary(state["history"], dropped)
             except KeyboardInterrupt:
-                console.print("\n[dim yellow]↳ aborted — history unchanged[/dim yellow]\n")
+                console.print(
+                    f"  [{phosphor.YELLOW}]⤷ aborted — history unchanged[/] "
+                    f"[{phosphor.DIM}]· snapshot not pushed · provider call "
+                    f"cancelled[/]\n"
+                )
                 continue
 
             elapsed = time.time() - start
@@ -158,6 +204,8 @@ def main() -> None:
                 "elapsed_s": elapsed,
                 **(stats or {}),
             }
+            # Rolling window for /stats' sparkline trend.
+            state["turn_history"].append(state["last_turn"])
             if dropped:
                 ctx_size = get_context_size()
                 threshold = int(0.8 * ctx_size)

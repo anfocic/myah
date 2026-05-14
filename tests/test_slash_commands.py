@@ -16,6 +16,11 @@ def test_known_command_returns_true(state):
     assert handle_slash("/help", state) is True
 
 
+def test_session_command_renders_rail(state):
+    # /session prints the Phosphor session rail; no state mutation
+    assert handle_slash("/session", state) is True
+
+
 def test_command_with_arg_is_parsed(state):
     # /rewind accepts an integer arg; with no snapshots it's a no-op
     assert handle_slash("/rewind 3", state) is True

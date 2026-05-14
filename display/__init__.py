@@ -5,9 +5,11 @@ codebase can keep importing from `display` while the implementation is
 split by mechanism under this package.
 """
 
+from display import phosphor
 from display.previews import (
     _parse_web_results,
     build_unified_diff,
+    render_bash_output,
     render_diff,
     render_file_preview,
     render_web_search_results,
@@ -20,6 +22,8 @@ __all__ = [
     "build_unified_diff",
     "on_tool_end",
     "on_tool_start",
+    "phosphor",
+    "render_bash_output",
     "render_diff",
     "render_file_preview",
     "render_web_search_results",

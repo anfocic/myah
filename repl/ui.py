@@ -13,6 +13,7 @@ import os
 import subprocess
 import time
 from collections.abc import Iterable
+from datetime import datetime
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -21,6 +22,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
 from config import INPUT_HISTORY_FILE, get_context_size
+from display import phosphor
 from providers import get_active_provider
 from repl.state import State
 
@@ -59,13 +61,15 @@ def _short_branch(name: str) -> str:
     return name if len(name) <= _BRANCH_MAX else name[: _BRANCH_MAX - 1] + "…"
 
 
-_CWD_MAX = 20
-
-
-def _short_cwd(cwd: str) -> str:
-    """Return the basename of cwd, shortened to _CWD_MAX chars."""
-    basename = os.path.basename(cwd) or cwd
-    return basename if len(basename) <= _CWD_MAX else basename[: _CWD_MAX - 1] + "…"
+def _tilde_cwd(cwd: str) -> str:
+    """`~`-relative cwd for the prompt floor, trimmed to the last two path
+    components so a deep tree doesn't crowd out the input line."""
+    home = os.path.expanduser("~")
+    path = "~" + cwd[len(home):] if cwd.startswith(home) else cwd
+    parts = path.split(os.sep)
+    if len(parts) > 3:
+        return os.sep.join([parts[0], "…", *parts[-2:]])
+    return path
 
 
 _MODEL_MAX = 40
@@ -122,13 +126,17 @@ def _ctx_gradient_style(ctx_used: int, ctx_total: int) -> str:
 
 
 def build_prompt(state: State) -> FormattedText:
-    """Short left prompt — just `You ›`. Status chrome lives on the right
-    via `rprompt` so the input line stays focused on what the user is
-    typing while the context signals stay visible in the same row."""
+    """The Phosphor prompt floor — `myah@local:~/cwd$`. The accent hue carries
+    `myah@local` and the `$`; the cwd rides in magenta (the design's branch/
+    identity slot). Status signals stay on the right via `rprompt`."""
+    accent = phosphor.accent_pt()
+    cwd = _tilde_cwd(state.get("cwd", os.getcwd()))
     return FormattedText(
         [
-            ("bold white", "You"),
-            ("ansibrightblack", " › "),
+            (f"{accent} bold", "myah@local"),
+            ("ansibrightblack", ":"),
+            ("ansimagenta", cwd),
+            (f"{accent} bold", "$ "),
         ]
     )
 
@@ -137,23 +145,19 @@ _DIM = "fg:ansibrightblack"
 
 
 def build_rprompt(state: State) -> FormattedText:
-    """Right-aligned prompt chrome: `branch · ctx% · provider:model`.
+    """Right-aligned prompt chrome: `branch · ctx% · provider:model [MODE]`.
 
-    Percent is the one number with color — a smooth green→yellow→red
-    gradient driven by ctx fill. Exact token counts live in `/context`
-    and the post-turn footer; the rprompt is for at-a-glance awareness
-    while typing. prompt_toolkit hides this automatically if the input
-    grows wide enough to collide with it."""
+    cwd moved to the left prompt floor, so the rprompt now carries the
+    at-a-glance signals only. Percent is the one number with color — a
+    smooth green→yellow→red gradient driven by ctx fill. A `[MODE]` pill
+    trails when plan or debug mode is on. prompt_toolkit hides all of this
+    automatically if the input grows wide enough to collide with it."""
     provider = get_active_provider()
     ctx_used = state.get("ctx_used", 0)
     ctx_size = get_context_size()
     pct = _ctx_pct(ctx_used, ctx_size)
 
     segments: list[tuple[str, str]] = []
-    cwd_short = _short_cwd(state.get("cwd", os.getcwd()))
-    if cwd_short:
-        segments.append((_DIM, cwd_short))
-        segments.append((_DIM, " · "))
     branch = _current_branch()
     if branch:
         segments.append((_DIM, _short_branch(branch)))
@@ -161,6 +165,10 @@ def build_rprompt(state: State) -> FormattedText:
     segments.append((_ctx_gradient_style(ctx_used, ctx_size), f"{pct:.0%}"))
     segments.append((_DIM, " · "))
     segments.append((_DIM, _rprompt_model(provider)))
+    if state.get("plan_mode"):
+        segments.append(("ansiyellow bold", " [PLAN]"))
+    if state.get("debug"):
+        segments.append(("ansimagenta bold", " [DEBUG]"))
     return FormattedText(segments)
 
 
@@ -214,22 +222,23 @@ def ctx_tag(ctx_used: int, ctx_total: int) -> str:
     return f"[dim]ctx[/dim] [{color}]{pct:.0%}[/{color}]"
 
 
-def build_turn_header(state: State) -> str:
-    """Compact turn preface so each run reads as a single unit in the log."""
-    provider = get_active_provider()
+def build_transmission_header(state: State) -> str:
+    """The Phosphor turn preface — `░▒▓ TRANSMISSION NNN ▓▒░ · time · ctx%`
+    closed by an accent rule. Each run reads as one transmission in the log."""
     turn_no = _history_turns(state["history"]) + 1
+    ctx_used = state["ctx_used"]
+    ctx_size = get_context_size()
+    pct = _ctx_pct(ctx_used, ctx_size)
+    now = datetime.now().strftime("%H:%M:%S")
     parts = [
-        f"[bold]Turn {turn_no}[/bold]",
-        f"[dim]{provider.name}:{_clip(provider.model, _MODEL_MAX)}[/dim]",
-        f"[dim]{state['ctx_used']:,}/{get_context_size():,}[/dim] {ctx_tag(state['ctx_used'], get_context_size())}",
+        phosphor.bracket(f"TRANSMISSION {turn_no:03d}"),
+        f"[{phosphor.DIM}]· {now} · ctx {pct:.0%}[/]",
     ]
-    branch = _current_branch()
-    if branch:
-        parts.insert(1, f"[dim]{_short_branch(branch)}[/dim]")
     for mode in _mode_labels(state):
         color = "yellow" if mode == "plan" else "magenta"
         parts.append(f"[{color}]{mode}[/{color}]")
-    return " [dim]·[/dim] ".join(parts)
+    parts.append(phosphor.rule(30))
+    return " ".join(parts)
 
 
 def build_turn_footer(ctx_used: int, ctx_total: int, elapsed_s: float, stats: dict) -> str:
