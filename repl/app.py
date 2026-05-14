@@ -90,14 +90,16 @@ class ReplApp:
         self.sess_state = "READY"
         self.turn_thread: threading.Thread | None = None
         self._main_height = max(4, shutil.get_terminal_size().lines - 4)
+        self._resume = resume
+        self._booted = False
 
-        # Buffer-backed console — pointed at the scrolling main pane. Width is
-        # the pane width at launch (terminal minus rail minus divider); resize
-        # won't reflow already-rendered history (documented v1 limitation).
-        cols = shutil.get_terminal_size().columns
-        main_width = max(40, cols - RAIL_WIDTH - 1)
+        # Buffer-backed console — pointed at the scrolling main pane. Its width
+        # is only set for real once the main Window has rendered (see
+        # `_main_text`): terminal-size probes can hand back the 80-col fallback,
+        # so the actual pane width is the only source to trust. This is a
+        # placeholder until then.
         self.buffer = RepaintBuffer()
-        self.console = BufferConsole(self.buffer, width=main_width)
+        self.console = BufferConsole(self.buffer, width=120)
         console._set_inner(self.console)  # every console.print site now → buffer
 
         self.scroll = ScrollState()
@@ -123,12 +125,11 @@ class ReplApp:
         self.app = self._build_application()
 
         # Resume is opt-in on both ends (same rationale as the old main.py):
-        # without --resume we neither load nor save.
+        # without --resume we neither load nor save. The boot screen is printed
+        # later — on the first render, once the real pane width is known.
         if resume:
             load_session(state)
             atexit.register(save_session, state)
-
-        self._print_boot_screen(resume)
 
     # -- layout --------------------------------------------------------------
 
@@ -163,7 +164,24 @@ class ReplApp:
             # Coalesce the streaming repaint storm — a fast local model can emit
             # hundreds of tokens/sec, each triggering an invalidate.
             min_redraw_interval=0.05,
+            after_render=self._after_render,
         )
+
+    def _after_render(self, _app) -> None:
+        """Runs after every render — the first time `render_info` is populated.
+        Sizes the buffer console to the real pane width (terminal-size probes
+        can hand back the 80-col fallback; the rendered Window can't) and prints
+        the boot screen once that width is correct."""
+        ri = self._main_window.render_info
+        if ri is None:
+            return
+        if ri.window_width and ri.window_width != self.console._width:
+            # Picks up resizes too; already-rendered history keeps its old
+            # width (documented v1 limitation).
+            self.console._width = ri.window_width
+        if not self._booted:
+            self._booted = True
+            self._print_boot_screen(self._resume)
 
     def _rail_text(self) -> ANSI:
         markup = render_session_rail(self.state, self.sess_state)
@@ -171,8 +189,8 @@ class ReplApp:
 
     def _main_text(self) -> ANSI:
         ri = self._main_window.render_info
-        height = ri.window_height if ri else self._main_height
-        self._main_height = max(1, height)
+        if ri is not None:
+            self._main_height = max(1, ri.window_height)
         # Reconcile scroll position against the current buffer size: stay
         # pinned to the tail unless the user has paged up.
         self.scroll.on_content(self.buffer.line_count(), self._main_height)
