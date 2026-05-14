@@ -136,3 +136,13 @@ SPIN_WINDOW = 3  # hardcoded — changing this breaks the spinning-call guard te
 # ── Paths ────────────────────────────────────────────────────────────────────
 SESSION_FILE = os.path.expanduser(_paths_cfg.get("session_file", "~/.mia_session.json"))
 INPUT_HISTORY_FILE = os.path.expanduser(_paths_cfg.get("input_history", "~/.mia_input_history"))
+
+# ── Personal vault ───────────────────────────────────────────────────────────
+# The user's Obsidian vault that Mia reads and writes via the `note_*` tools.
+# Distinct from `vault/` in this repo, which is the project's dev knowledge
+# base reached through `vault_search`.
+_vault_cfg = _file_cfg.get("vault", {})
+MIA_VAULT_PATH = os.path.expanduser(
+    env_override("MIA_VAULT_PATH", "vault.path", _vault_cfg.get("path", "~/MiaVault"))
+)
+MIA_DAILY_DIR = _vault_cfg.get("daily_dir", "daily")

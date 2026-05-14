@@ -23,6 +23,7 @@ from typing import Any
 import tools.bash  # noqa: F401
 import tools.files  # noqa: F401
 import tools.git  # noqa: F401
+import tools.notes  # noqa: F401
 import tools.search  # noqa: F401
 import tools.utils  # noqa: F401
 import tools.vault  # noqa: F401

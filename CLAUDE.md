@@ -1,12 +1,10 @@
-# Agent Harness — Project Guide
+# Mia — Personal Agent
 
 ## Purpose
 
-A hand-rolled agent harness built for **learning how agent harnesses work**. The goal is to understand — by building — what Claude Code, Codex, Cursor, etc. do internally: tool calling, the chat/tool/chat cycle, history management, permissioning, and context budgeting.
+**Mia is the user's personal agent.** It manages their Obsidian vault, drafts writing, researches the live web, and works with their files and code — a real, daily-use application running on a local or hosted model.
 
-AI concepts (the agent loop, context trimming, tool-call lifecycle, provider contracts) should remain clearly visible and well-explained — pedagogy matters.
-
-Programming patterns in the implementation, however, should tend toward clean, pragmatic solutions. This codebase will grow; prefer maintainable structure over "showing the mechanism" when the mechanism is already clear. Refactor when duplication appears, use standard libraries, and keep modules focused.
+It grew out of a hand-rolled learning harness, so the core AI mechanism (the agent loop, context trimming, tool-call lifecycle, provider contracts) is still clean and legible — keep it that way. But the project is no longer pedagogy-first: prioritize being a genuinely useful agent. Prefer maintainable structure over "showing the mechanism," refactor when duplication appears, use standard libraries, and keep modules focused.
 
 Do NOT use emojis in responses.
 
@@ -46,6 +44,9 @@ tools/
   search.py     — glob, grep
   bash.py       — guarded shell execution
   git.py        — narrow git helpers
+  vault.py      — vault_search over the project's dev knowledge base
+  notes.py      — note_* tools over the user's personal Obsidian vault
+  web_search.py — live web search via Brave
   harness.py    — harness_info snapshot
   subagent.py   — nested run_agent delegation
   utils.py      — get_current_time
@@ -100,8 +101,12 @@ The REPL now prints a per-turn context tag rather than the old context bar.
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `NUM_CTX` | `32768` | Context budget passed to providers |
 | `TOOL_RESULT_MAX_BYTES` | `10000` | Harness-level cap before tool output is truncated |
+| `MIA_VAULT_PATH` | `~/MiaVault` | The user's personal Obsidian vault (created on first use) |
+| `MIA_DAILY_DIR` | `daily` | Subfolder under the vault for daily notes |
 
 Hosted providers read their own env vars (`OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*`) via the provider factory.
+
+The personal vault (`MIA_VAULT_PATH`) is distinct from `vault/` in this repo: `vault/` is the project's own dev knowledge base reached through `vault_search`; the personal vault is the user's notes, reached through the `note_*` tools.
 
 ## Control Surfaces
 
@@ -124,6 +129,9 @@ Hosted providers read their own env vars (`OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*
 - `harness_info`
 - `git_checkout`
 - `spawn_subagent`
+- `web_search`
+- `vault_search` — project dev knowledge base
+- `note_read`, `note_search`, `note_list`, `note_write`, `note_append`, `daily_note` — the user's personal Obsidian vault
 
 In plan mode, only read-only tools run; mutating tools are short-circuited so the model can inspect but not change state.
 

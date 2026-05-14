@@ -14,7 +14,10 @@ from rich.syntax import Syntax
 
 from display import build_unified_diff
 
-SENSITIVE_TOOLS = {"write_file", "edit_file", "bash", "git_checkout"}
+SENSITIVE_TOOLS = {
+    "write_file", "edit_file", "bash", "git_checkout",
+    "note_write", "note_append", "daily_note",
+}
 _session_allowed: set[str] = set()
 
 
@@ -25,6 +28,9 @@ _RISK_LABELS = {
     "edit_file": "file edit",
     "write_file": "file write",
     "git_checkout": "git state change",
+    "note_write": "vault note write",
+    "note_append": "vault note append",
+    "daily_note": "vault daily note write",
 }
 
 
