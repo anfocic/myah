@@ -12,6 +12,8 @@ from display.previews import (
     render_bash_output,
     render_diff,
     render_file_preview,
+    render_todo_result,
+    render_todos,
     render_web_search_results,
 )
 from display.streaming import StreamingMarkdown
@@ -26,6 +28,8 @@ __all__ = [
     "render_bash_output",
     "render_diff",
     "render_file_preview",
+    "render_todo_result",
+    "render_todos",
     "render_web_search_results",
     "_parse_web_results",
 ]

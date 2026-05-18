@@ -333,6 +333,7 @@ class ReplApp:
                 on_tool_end=on_tool_end,
                 debug=self.state["debug"],
                 cwd=self.state["cwd"],
+                todos=self.state.get("todos", []),
             )
             ctx_before_trim = self.state["ctx_used"]
             self.state["history"], dropped = trim_history(

@@ -120,6 +120,7 @@ Hosted providers read their own env vars (`OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*
 - `harness_info`
 - `git_checkout`
 - `spawn_subagent`
+- `todo_write` — working-memory todo list (whole-list-replace, exactly one item `in_progress` at a time, rendered back into the next turn's system prompt)
 
 In plan mode, only read-only tools run; mutating tools are short-circuited so the model can inspect but not change state.
 

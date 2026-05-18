@@ -69,6 +69,7 @@ TOOL_HUE = {
     "harness_info": GREEN,
     "cd": GREEN,
     "pwd": GREEN,
+    "todo_write": GREEN,
 }
 
 

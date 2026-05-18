@@ -120,6 +120,7 @@ The personal vault (`MIA_VAULT_PATH`) is distinct from `vault/` in this repo: `v
 - `/compact`
 - `/rewind [N]`
 - `/model [provider:]name`
+- `/todos` — show the model's working todo list (`/todos clear` to wipe)
 
 **Built-in tools exposed to the model**
 - `get_current_time`
@@ -132,6 +133,7 @@ The personal vault (`MIA_VAULT_PATH`) is distinct from `vault/` in this repo: `v
 - `web_search`
 - `vault_search` — project dev knowledge base
 - `note_read`, `note_search`, `note_list`, `note_write`, `note_append`, `daily_note` — the user's personal Obsidian vault
+- `todo_write` — model-maintained working memory: whole-list-replace, exactly one item `in_progress` at a time; the live list ships back into the system prompt as a `<todos>` block on every turn
 
 In plan mode, only read-only tools run; mutating tools are short-circuited so the model can inspect but not change state.
 

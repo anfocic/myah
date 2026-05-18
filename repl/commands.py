@@ -3,6 +3,7 @@ data-plane split (CONCEPTS §22): slash input is handled by the REPL without
 the model in the loop. Every handler takes `(state, arg="")` — commands
 that don't use `arg` ignore it, so `handle_slash` can dispatch uniformly
 without inspecting function signatures."""
+import json
 import os
 
 from rich.panel import Panel
@@ -11,7 +12,7 @@ from agent import apply_summary, compact_history
 from agent.system_prompt import build_system_prompt
 from agent.tokens import estimate_tokens
 from config import get_context_size
-from display import phosphor
+from display import phosphor, render_todos
 from providers import (
     SUPPORTED_PROVIDERS,
     ProviderError,
@@ -27,6 +28,7 @@ from repl.state import State
 from repl.tool_registry import TOOL_NAMES
 from repl.tool_registry import TOOL_SCHEMAS as REGISTERED_TOOLS
 from repl.ui import ctx_tag, render_session_rail
+from tools.notes import note_write
 
 
 def _config_value_repr(val) -> str:
@@ -109,8 +111,8 @@ def cmd_config(state: State, arg: str = "") -> None:
 # Slash commands grouped for /help display. Dispatch still goes through the
 # flat SLASH_COMMANDS dict; this only controls how the list is presented.
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
-    ("info", ["/help", "/context", "/profile", "/stats", "/session"]),
-    ("control", ["/cd", "/config", "/clear"]),
+    ("info", ["/help", "/context", "/profile", "/stats", "/session", "/todos"]),
+    ("control", ["/cd", "/config", "/clear", "/save-session"]),
     ("modes", ["/plan", "/debug"]),
     ("undo", ["/retry", "/compact", "/rewind"]),
     ("provider", ["/model", "/eval"]),
@@ -144,6 +146,7 @@ def cmd_clear(state: State, arg: str = "") -> None:
     state["history"].clear()
     state["snapshots"].clear()  # else /rewind resurrects wiped history
     state["ctx_used"] = 0
+    state["todos"] = []
     wipe_session()
     console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
@@ -156,6 +159,7 @@ def _next_turn_messages(state: State) -> list[dict]:
     sys_prompt = build_system_prompt(
         plan_mode=state.get("plan_mode", False),
         cwd=state.get("cwd"),
+        todos=state.get("todos", []),
     )
     return [{"role": "system", "content": sys_prompt}] + list(state["history"])
 
@@ -628,6 +632,120 @@ def cmd_session(state: State, arg: str = "") -> None:
     console.print(render_session_rail(state))
 
 
+def cmd_todos(state: State, arg: str = "") -> None:
+    """Show the current todo list. Working memory the model maintains
+    via the `todo_write` tool — see tools/todo.py. `/todos clear` wipes
+    the list (useful when starting a new task that shouldn't inherit
+    stale entries)."""
+    if arg.strip() == "clear":
+        state["todos"] = []
+        console.print("[dim]↳ todo list cleared[/dim]")
+        return
+    render_todos(console, state.get("todos", []))
+
+
+def cmd_save_session(state: State, arg: str = "") -> None:
+    """Save the current conversation to the vault as a markdown archive.
+
+    Arg shapes:
+        /save-session            — auto-title from first user message
+        /save-session <title>    — use the given title
+    """
+    import re
+    from datetime import date, datetime
+
+    history = state.get("history", [])
+    if not history:
+        console.print("[dim]↳ no conversation history to save[/dim]")
+        return
+
+    provider = get_active_provider()
+    model = provider.model
+    provider_name = provider.name
+    ctx_size = provider.context_size
+
+    # Build title
+    title = arg.strip()
+    if not title:
+        first_user = ""
+        for msg in history:
+            if msg.get("role") == "user":
+                first_user = msg.get("content", "")
+                break
+        title = first_user.strip().split("\n")[0][:60]
+        if not title:
+            title = "untitled-session"
+
+    # Slugify for filename
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", title.lower()).strip("-")[:40]
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    filename = f"sessions/{timestamp}-{slug}.md"
+
+    # Build frontmatter
+    turn_count = sum(1 for msg in history if msg.get("role") == "assistant")
+    total_user_msgs = sum(1 for msg in history if msg.get("role") == "user")
+    last_turn = state.get("last_turn", {})
+    ctx_used = last_turn.get("ctx_used", state.get("ctx_used", 0))
+
+    lines = [
+        "---",
+        f"date: {date.today().isoformat()}",
+        f"datetime: {datetime.now().isoformat()}",
+        f"model: {model}",
+        f"provider: {provider_name}",
+        f"context_size: {ctx_size}",
+        f"turns: {turn_count}",
+        f"user_messages: {total_user_msgs}",
+        f"ctx_used_last_turn: {ctx_used}",
+        "tags: session",
+        "---",
+        "",
+        f"# Session: {title}",
+        "",
+        "## Summary",
+        "",
+        "_Add your own summary here, or ask the model to extract entities and decisions._",
+        "",
+        "## Transcript",
+        "",
+    ]
+
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "user":
+            lines.append(f"**user:** {content}")
+            lines.append("")
+        elif role == "assistant":
+            lines.append(f"**assistant:** {content}")
+            lines.append("")
+        elif role == "system":
+            lines.append("*[system note omitted]*")
+            lines.append("")
+
+    lines.extend([
+        "## Extracted Data",
+        "",
+        "- **Entities:**",
+        "- **Decisions:**",
+        "- **TODOs:**",
+        "",
+        "## Raw Telemetry",
+        "",
+        "```json",
+        json.dumps(last_turn, indent=2, default=str),
+        "```",
+    ])
+
+    content = "\n".join(lines)
+    result = note_write(filename, content)
+    if result.startswith("Error") or result.startswith("Refused"):
+        console.print(f"[dim red]↳ {result}[/dim red]")
+    else:
+        note_path = result.replace("Note written: ", "")
+        console.print(f"[dim]↳ saved session to [[{note_path}]][/dim]")
+
+
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
     "/cd": (cmd_cd, "change the harness working directory (or print it with no argument)"),
@@ -644,6 +762,8 @@ SLASH_COMMANDS: dict = {
     "/profile": (cmd_profile, "per-role token breakdown of the next turn's prompt"),
     "/stats": (cmd_stats, "show the last turn's ctx/wall/ttft/rate"),
     "/eval": (cmd_eval, "run the eval suite (`/eval list` to list, `/eval <id>...` for a subset)"),
+    "/save-session": (cmd_save_session, "archive current conversation to the vault (`/save-session <title>`)"),
+    "/todos": (cmd_todos, "show the model's working todo list (`/todos clear` to wipe)"),
 }
 
 

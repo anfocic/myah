@@ -30,7 +30,7 @@ Merged from `agentic_harness_must_haves.md` and `agentic_harness_borrowed_ideas.
 | Plan mode blocks all mutating tools | Done | `agent/loop.py:520-528` |
 | CWD security boundary | Done | `security.py:19-20`, anchored to startup cwd |
 | Prompt-injection annotation | Done | `security.py:114-123`, warns model without destroying data |
-| Structured error recovery hints | Partial | Errors surfaced but no "try alternative approach" guidance in system prompt |
+| Structured error recovery hints | Done | `agent/system_prompt.py` — persona tells the model not to retry identical failing calls and to try a different approach |
 
 ## Tool Infrastructure
 
@@ -68,14 +68,14 @@ Merged from `agentic_harness_must_haves.md` and `agentic_harness_borrowed_ideas.
 
 | Feature | Status | Where |
 |---|---|---|
-| Todo list as working memory | Not done | Model has no structured task tracker beyond flat history |
+| Todo list as working memory | Done | `tools/todo.py`, `state["todos"]`, `<todos>` block in system prompt, `/todos` command, persisted in session ([[vault/wiki/decisions/0014-todo-write-state-via-dispatcher-closure]]) |
 
 ## Priority Queue
 
 Ordered by impact-to-effort ratio:
 
-1. **Error recovery hints** (Partial → Done) — add "if a tool fails, try a different approach" to system prompt. Trivial.
-2. **Todo list as working memory** — new tool `set_todo`/`get_todo` or inject into system prompt as structured block. High impact, low effort.
+1. ~~Error recovery hints~~ — shipped.
+2. ~~Todo list as working memory~~ — shipped.
 3. **Tool registry versioning** — add `version: str` to `Tool` dataclass. Low effort.
 4. **Conversation variables** — `set_var(name, value)` / `get_var(name)` tools. Medium effort, enables persistent cross-turn state without history pollution.
 5. **Step-level retries with backoff** — wrap tool execution in retry loop. Medium effort.
