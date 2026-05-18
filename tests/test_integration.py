@@ -789,3 +789,192 @@ def test_retry_skipped_when_partial_content_already_streamed(monkeypatch):
     assert provider.call_count == 1
     assert stats.get("provider_retries") in (None, 0)
     assert "provider_error" in stats
+
+
+# ---------- idempotency cache for read-only tools ----------
+
+def _counting_execute_tool():
+    """Build an execute_tool that records every call and returns a result
+    derived from the args so tests can compare cached vs fresh output."""
+    calls: list[tuple[str, dict]] = []
+
+    def execute(name: str, args: dict) -> str:
+        calls.append((name, dict(args)))
+        return f"{name}:{args}"
+
+    return execute, calls
+
+
+def test_read_only_tool_repeat_call_hits_cache(install_provider):
+    """When a read-only tool is called twice with identical args within
+    the same run_agent call, the second call should hit the per-call
+    cache and skip the actual execution."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    execute, calls = _counting_execute_tool()
+    response, _history, _ctx, _stats = run_agent(
+        user_input="read it twice",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+    )
+
+    assert response == "done"
+    assert len(calls) == 1
+
+
+def test_read_only_tool_different_args_does_not_hit_cache(install_provider):
+    """The cache key includes the args — a second call with different
+    args must execute fresh, not return the prior cached result."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "b.py"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    execute, calls = _counting_execute_tool()
+    run_agent(
+        user_input="read two files",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+    )
+
+    assert len(calls) == 2
+
+
+def test_mutating_tool_is_never_cached(install_provider):
+    """Mutating tools (write_file, bash, edit_file) must always re-execute —
+    the world changes between calls and a stale cached result would lie
+    to the model."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("write_file", {"path": "x.py", "content": "v1"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("write_file", {"path": "x.py", "content": "v1"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    execute, calls = _counting_execute_tool()
+    # Permission gate must approve write_file for this test (subagent
+    # default would block it).
+    run_agent(
+        user_input="write twice",
+        tools=[{"type": "function", "function": {"name": "write_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+        permission_check=lambda name, args, meta=None: True,
+    )
+
+    assert len(calls) == 2
+
+
+def test_mutating_call_invalidates_read_cache(install_provider):
+    """A successful mutating call clears the cache: a read after a write
+    must reflect the new state of the world, not the pre-write read."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("write_file", {"path": "a.py", "content": "v2"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    execute, calls = _counting_execute_tool()
+    run_agent(
+        user_input="read-write-read",
+        tools=[
+            {"type": "function", "function": {"name": "read_file", "parameters": {}}},
+            {"type": "function", "function": {"name": "write_file", "parameters": {}}},
+        ],
+        execute_tool=execute,
+        history=[],
+        permission_check=lambda name, args, meta=None: True,
+    )
+
+    # 3 actual executions: first read, the write, then the post-write read.
+    assert len(calls) == 3
+    assert [c[0] for c in calls] == ["read_file", "write_file", "read_file"]
+
+
+def test_failed_read_only_call_is_not_cached(install_provider):
+    """If a read-only tool raises, the failure must NOT be cached. A retry
+    with the same args should execute fresh (the failure may have been
+    transient, and a cached exception string would prevent recovery)."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    call_count = [0]
+
+    def execute(name: str, args: dict) -> str:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise OSError("transient")
+        return "ok"
+
+    run_agent(
+        user_input="retry on fail",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+    )
+
+    assert call_count[0] == 2
+
+
+def test_cache_hit_surfaces_in_tool_end_meta(install_provider):
+    """The on_tool_end callback receives `meta['cache_hit']=True` for cached
+    calls so the UI can render a `(cached)` marker without re-implementing
+    the cache lookup."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "a.py"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    captured: list[dict] = []
+
+    def end_hook(name, args, result, ok, meta=None):
+        captured.append({"name": name, "ok": ok, "meta": meta})
+
+    execute, _calls = _counting_execute_tool()
+    run_agent(
+        user_input="double read",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+        on_tool_end=end_hook,
+    )
+
+    assert captured[0]["meta"].get("cache_hit") in (None, False)
+    assert captured[1]["meta"].get("cache_hit") is True
