@@ -111,7 +111,7 @@ def cmd_config(state: State, arg: str = "") -> None:
 # Slash commands grouped for /help display. Dispatch still goes through the
 # flat SLASH_COMMANDS dict; this only controls how the list is presented.
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
-    ("info", ["/help", "/context", "/profile", "/stats", "/session", "/todos", "/vars"]),
+    ("info", ["/help", "/about", "/version", "/context", "/profile", "/stats", "/session", "/todos", "/vars"]),
     ("control", ["/cd", "/config", "/clear", "/save-session", "/export"]),
     ("modes", ["/plan", "/debug"]),
     ("undo", ["/retry", "/compact", "/rewind"]),
@@ -712,6 +712,44 @@ def cmd_export(state: State, arg: str = "") -> None:
         console.print(f"[dim]↳ exported to {result}[/dim]")
 
 
+def _mia_version() -> str:
+    """Best-effort lookup of the installed package version. Falls back to
+    'dev' when the package isn't installed (e.g. running from a source
+    checkout without `pip install -e .`)."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover — Python < 3.8 ditched a while back
+        return "unknown"
+    try:
+        return version("myah")
+    except PackageNotFoundError:
+        return "dev"
+
+
+def cmd_version(state: State, arg: str = "") -> None:
+    """Print the mia package version."""
+    console.print(f"mia {_mia_version()}")
+
+
+def cmd_about(state: State, arg: str = "") -> None:
+    """Print a compact manifest of the running harness: package version,
+    active provider/model, context window, num tools, plan mode."""
+    provider = get_active_provider()
+    a = phosphor.accent()
+    lines = [
+        phosphor.bracket("MIA"),
+        f"  [{phosphor.DIM}]version  [/] [{a}]{_mia_version()}[/]",
+        f"  [{phosphor.DIM}]model    [/] [{phosphor.WHITE}]{provider.model}[/] "
+        f"[{phosphor.DIM}]· {provider.name}[/]",
+        f"  [{phosphor.DIM}]num_ctx  [/] [{phosphor.WHITE}]{get_context_size():,}[/]",
+        f"  [{phosphor.DIM}]tools    [/] [{phosphor.WHITE}]{len(TOOL_NAMES)} registered[/]",
+        f"  [{phosphor.DIM}]plan mode[/] "
+        + ("[yellow]ON[/yellow]" if state.get("plan_mode") else "[dim]off[/dim]"),
+        f"  [{phosphor.DIM}]cwd      [/] [{phosphor.WHITE}]{state.get('cwd', '')}[/]",
+    ]
+    console.print("\n".join(lines))
+
+
 def cmd_save_session(state: State, arg: str = "") -> None:
     """Save the current conversation to the vault as a markdown archive.
 
@@ -816,6 +854,8 @@ def cmd_save_session(state: State, arg: str = "") -> None:
 
 SLASH_COMMANDS: dict = {
     "/help": (cmd_help, "show this list"),
+    "/version": (cmd_version, "print the mia package version"),
+    "/about": (cmd_about, "show a compact manifest of the running harness"),
     "/cd": (cmd_cd, "change the harness working directory (or print it with no argument)"),
     "/session": (cmd_session, "show the session console (state/ctx/tools rail)"),
     "/config": (cmd_config, "show/reload/edit configuration (reload | path | edit)"),
