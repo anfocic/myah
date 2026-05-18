@@ -183,6 +183,141 @@ def note_search(query: str, folder: str | None = None) -> str:
     return "\n\n".join(hits) if hits else "No matches in vault."
 
 
+def _normalize_link_target(name: str) -> str:
+    """Strip `[[ ]]`, optional `.md`, and any wikilink alias / heading
+    fragment. `[[Foo|bar]]` → 'Foo'; `[[Foo#Section]]` → 'Foo'."""
+    n = name.strip().strip("[]").strip()
+    if "|" in n:
+        n = n.split("|", 1)[0].strip()
+    if "#" in n:
+        n = n.split("#", 1)[0].strip()
+    if n.endswith(".md"):
+        n = n[:-3]
+    return n
+
+
+def _wikilink_re(target_stem: str) -> re.Pattern[str]:
+    """Match `[[target]]`, `[[target|alias]]`, `[[target#heading]]`,
+    `[[target.md]]`, `[[path/to/target]]`. Case-insensitive on the stem.
+    A wikilink to `path/foo` from `bar` still resolves; we match either
+    the full sub-path or the trailing stem so naming both styles works."""
+    stem = re.escape(target_stem)
+    return re.compile(
+        r"\[\[\s*(?:[^\]\|#]*?/)?"  # optional folder prefix
+        + stem
+        + r"(?:\.md)?\s*(?:[\|#][^\]]*)?\]\]",
+        re.IGNORECASE,
+    )
+
+
+def note_backlinks(name: str) -> str:
+    """Return notes whose body contains a wikilink to `name`.
+
+    Each line is `vault-relative-path : matched-snippet`. The match is
+    case-insensitive and ignores any alias (`[[foo|alias]]`) or heading
+    fragment (`[[foo#H]]`). Returns 'No backlinks.' when nothing links
+    in."""
+    target = _normalize_link_target(name)
+    if not target:
+        return "Refused: empty name"
+    pattern = _wikilink_re(target)
+    target_path = _resolve(target + ".md") or _find_by_name(target)
+
+    root = _vault_root()
+    hits: list[str] = []
+    for fp in _iter_notes(root):
+        if target_path is not None and fp.resolve() == target_path.resolve():
+            continue  # don't count a note linking to itself
+        try:
+            if fp.stat().st_size > MAX_FILE_BYTES:
+                continue
+            text = fp.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        match = pattern.search(text)
+        if not match:
+            continue
+        start = max(match.start() - 60, 0)
+        end = min(match.end() + 120, len(text))
+        snippet = text[start:end].replace("\n", " ").strip()
+        if start > 0:
+            snippet = "..." + snippet
+        if end < len(text):
+            snippet += "..."
+        hits.append(f"{fp.relative_to(root)}\n  {snippet}")
+        if len(hits) >= MAX_RESULTS:
+            break
+    return "\n\n".join(hits) if hits else "No backlinks."
+
+
+_INLINE_TAG_RE_TPL = r"(?:(?<=\s)|(?<=^))#{tag}(?![/\w-])"
+_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---", re.DOTALL)
+
+
+def _frontmatter_tags(text: str) -> list[str]:
+    """Pull tags out of YAML-ish frontmatter without a full YAML parser.
+
+    Accepts `tags: [a, b, c]`, `tags: a, b`, `tags: foo` (single), and
+    block-list form (`tags:\\n  - a\\n  - b`). Anything we can't parse
+    just returns an empty list — callers fall back to body scan."""
+    m = _FRONTMATTER_RE.search(text)
+    if not m:
+        return []
+    body = m.group(1)
+    tags: list[str] = []
+    in_block_list = False
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        if in_block_list:
+            stripped = line.lstrip()
+            if stripped.startswith("- "):
+                tags.append(stripped[2:].strip().strip("\"'"))
+                continue
+            in_block_list = False
+        if line.lstrip().lower().startswith("tags:"):
+            after = line.split(":", 1)[1].strip()
+            if not after:
+                in_block_list = True
+                continue
+            if after.startswith("["):
+                inner = after.strip("[]")
+                tags.extend(t.strip().strip("\"'") for t in inner.split(",") if t.strip())
+            else:
+                tags.extend(t.strip().strip("\"'") for t in after.split(",") if t.strip())
+    return [t for t in tags if t]
+
+
+def note_by_tag(tag: str) -> str:
+    """Return notes that carry `tag` either as an inline `#tag` in the
+    body or in the frontmatter `tags:` field. Case-insensitive. Tags can
+    be passed with or without the leading `#`."""
+    needle = tag.strip().lstrip("#").strip()
+    if not needle:
+        return "Refused: empty tag"
+    needle_lc = needle.lower()
+    inline_re = re.compile(_INLINE_TAG_RE_TPL.format(tag=re.escape(needle)), re.IGNORECASE)
+
+    root = _vault_root()
+    hits: list[str] = []
+    for fp in _iter_notes(root):
+        try:
+            if fp.stat().st_size > MAX_FILE_BYTES:
+                continue
+            text = fp.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        fm_tags = [t.lower() for t in _frontmatter_tags(text)]
+        in_fm = needle_lc in fm_tags
+        in_body = bool(inline_re.search(text))
+        if not (in_fm or in_body):
+            continue
+        where = "frontmatter" if in_fm else "body"
+        hits.append(f"{fp.relative_to(root)}  ({where})")
+        if len(hits) >= MAX_RESULTS:
+            break
+    return "\n".join(hits) if hits else "No notes with that tag."
+
+
 def daily_note(content: str | None = None) -> str:
     """Open today's daily note. With `content`, append it first. Returns the
     note's full content either way."""
@@ -224,6 +359,14 @@ def _search_adapter(args: dict, _cwd: str):
 
 def _daily_adapter(args: dict, _cwd: str):
     return daily_note(args.get("content"))
+
+
+def _backlinks_adapter(args: dict, _cwd: str):
+    return note_backlinks(args["name"])
+
+
+def _by_tag_adapter(args: dict, _cwd: str):
+    return note_by_tag(args["tag"])
 
 
 register(
@@ -301,4 +444,42 @@ register(
     ),
     adapter=_daily_adapter,
     properties={"content": {"type": "string", "description": "Optional Markdown to append to today's note"}},
+)
+
+register(
+    name="note_backlinks",
+    description=(
+        "Find every note in the user's personal Obsidian vault that links to "
+        "the given note via a `[[wikilink]]`. Match is case-insensitive and "
+        "tolerates aliases (`[[foo|bar]]`) and heading fragments (`[[foo#H]]`). "
+        "Use to discover what context a note belongs to before reading it."
+    ),
+    adapter=_backlinks_adapter,
+    properties={
+        "name": {
+            "type": "string",
+            "description": "Note name, wikilink, or vault-relative path (with or without .md)",
+        },
+    },
+    required=["name"],
+    read_only=True,
+)
+
+register(
+    name="note_by_tag",
+    description=(
+        "Find every note in the user's personal Obsidian vault that carries "
+        "the given tag, either inline as `#tag` in the body or in the "
+        "frontmatter `tags:` field. Case-insensitive; the leading `#` is "
+        "optional. Use to gather all notes on a topic before answering."
+    ),
+    adapter=_by_tag_adapter,
+    properties={
+        "tag": {
+            "type": "string",
+            "description": "Tag name (with or without leading `#`)",
+        },
+    },
+    required=["tag"],
+    read_only=True,
 )
