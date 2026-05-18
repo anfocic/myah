@@ -11,7 +11,16 @@ from pathlib import Path
 # Imported for the plan-mode system prompt's "read-only tools" list.
 # Defined in agent/__init__.py and also used by agent/loop.py's tool gate.
 from agent import READ_ONLY_TOOLS
+from agent.skills import load_skills, skills_block
 from providers import get_active_provider
+
+
+def _skills_for_prompt():
+    """Indirection point so tests can monkeypatch the skill source without
+    touching the filesystem. Reads MIA_SKILLS_PATH lazily so an env-var
+    override applied after import still takes effect."""
+    from config import MIA_SKILLS_PATH
+    return load_skills(MIA_SKILLS_PATH)
 
 
 def _git(*args: str, cwd: str | None = None) -> str | None:
@@ -177,6 +186,11 @@ Rules:
     vars_part = _vars_block(vars_dict) if not subagent else None
     if vars_part:
         parts["vars"] = vars_part
+
+    if not subagent:
+        skills_part = skills_block(_skills_for_prompt())
+        if skills_part:
+            parts["skills"] = skills_part
 
     if plan_mode:
         parts["plan_mode"] = (

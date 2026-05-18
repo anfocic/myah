@@ -174,3 +174,12 @@ MIA_VAULT_PATH = os.path.expanduser(
     env_override("MIA_VAULT_PATH", "vault.path", _vault_cfg.get("path", "~/MiaVault"))
 )
 MIA_DAILY_DIR = _vault_cfg.get("daily_dir", "daily")
+
+# ── Skills ───────────────────────────────────────────────────────────────────
+# User-defined markdown skill files under this directory are auto-injected
+# into every system prompt as a <skills> block (subagents excepted). Opt-in:
+# a missing directory simply yields no block.
+_skills_cfg = _file_cfg.get("skills", {})
+MIA_SKILLS_PATH = os.path.expanduser(
+    env_override("MIA_SKILLS_PATH", "skills.path", _skills_cfg.get("path", "~/.mia/skills"))
+)
