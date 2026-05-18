@@ -15,4 +15,5 @@ def state():
         "debug": False,
         "snapshots": deque(maxlen=20),
         "todos": [],
+        "vars": {},
     }

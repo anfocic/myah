@@ -261,6 +261,7 @@ def run_agent(
     subagent: bool = False,
     cwd: str | None = None,
     todos: list | None = None,
+    vars_dict: dict[str, str] | None = None,
 ):
     # Sentinel + per-call init avoids the mutable-default-arg footgun: a
     # literal [] default is shared across every call that omits history, so
@@ -269,7 +270,7 @@ def run_agent(
         history = []
     messages = (
         [{"role": "system", "content": build_system_prompt(
-            plan_mode, subagent=subagent, cwd=cwd, todos=todos,
+            plan_mode, subagent=subagent, cwd=cwd, todos=todos, vars_dict=vars_dict,
         )}]
         + history
         + [{"role": "user", "content": user_input}]
