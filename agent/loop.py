@@ -280,6 +280,8 @@ def run_agent(
     cwd: str | None = None,
     todos: list | None = None,
     vars_dict: dict[str, str] | None = None,
+    pre_tool_hook=None,
+    post_tool_hook=None,
 ):
     # Sentinel + per-call init avoids the mutable-default-arg footgun: a
     # literal [] default is shared across every call that omits history, so
@@ -477,6 +479,8 @@ def run_agent(
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
                 idempotency_cache=idempotency_cache,
+                pre_tool_hook=pre_tool_hook,
+                post_tool_hook=post_tool_hook,
             )
             for content_str in results:
                 # Two-pass processing on every tool result:
@@ -558,6 +562,8 @@ def _run_tools_parallel(
     on_tool_start=None,
     on_tool_end=None,
     idempotency_cache: dict[tuple[str, str], str] | None = None,
+    pre_tool_hook=None,
+    post_tool_hook=None,
 ) -> list[str]:
     """Serial permission gate (user prompts can't be parallel) → parallel
     execution for approved calls → results returned in original tool_calls
@@ -581,7 +587,16 @@ def _run_tools_parallel(
     subsequent read reflects the new world state. Same-batch duplicates
     still execute twice (the cache is only populated after a result
     arrives) — that case is rare enough not to be worth a pending-keys
-    second layer."""
+    second layer.
+
+    `pre_tool_hook(name, args) -> (allowed, args, msg)` runs after the
+    permission gate and before the idempotency cache check. Return
+    `(True, args, None)` for pass-through, `(True, new_args, None)` to
+    rewrite args, or `(False, args, "reason")` to block the call and
+    surface `"reason"` to the model as the tool result. `post_tool_hook(
+    name, args, result, ok) -> (result, ok)` runs after a tool returns
+    and can transform the result or flip the ok flag — applied uniformly
+    to serial and parallel branches."""
 
     def _notify_start(name, args, meta):
         if on_tool_start:
@@ -633,6 +648,13 @@ def _run_tools_parallel(
             results[i] = msg
             _notify_end(name, args, msg, False, meta)
         else:
+            if pre_tool_hook is not None:
+                allowed, args, block_msg = pre_tool_hook(name, args)
+                if not allowed:
+                    msg = block_msg or "Tool call blocked by pre_tool_hook."
+                    results[i] = msg
+                    _notify_end(name, args, msg, False, meta | {"pre_blocked": True})
+                    continue
             cache_key = None
             if idempotency_cache is not None and name in READ_ONLY_TOOLS:
                 cache_key = (name, json.dumps(args, sort_keys=True, default=str))
@@ -655,6 +677,14 @@ def _run_tools_parallel(
         if ok and cache_key is not None:
             idempotency_cache[cache_key] = str(payload)
 
+    def _apply_post_hook(name: str, args: dict, result: str, ok: bool) -> tuple[str, bool]:
+        """Run the post_tool_hook (if set) on a finished tool result. The
+        hook may rewrite the result string, flip the ok flag, or both.
+        Pass-through when no hook is configured."""
+        if post_tool_hook is None:
+            return result, ok
+        return post_tool_hook(name, args, result, ok)
+
     if approved:
         # Once a batch contains any mutating tool, run the whole batch
         # serially in request order. This avoids stale reads and write races
@@ -671,13 +701,12 @@ def _run_tools_parallel(
                 end_meta = meta | {"duration_s": duration_s}
                 if ok:
                     out = str(payload)
-                    results[i] = out
-                    _notify_end(name, args, out, True, end_meta)
                 else:
                     e = payload
-                    msg = f"Tool raised: {type(e).__name__}: {e}"
-                    results[i] = msg
-                    _notify_end(name, args, msg, False, end_meta)
+                    out = f"Tool raised: {type(e).__name__}: {e}"
+                out, ok = _apply_post_hook(name, args, out, ok)
+                results[i] = out
+                _notify_end(name, args, out, ok, end_meta)
                 _record_cache(name, cache_key, ok, payload if ok else None)
         else:
             # NOTE: cancel_futures=True only cancels futures that haven't
@@ -699,14 +728,13 @@ def _run_tools_parallel(
                     end_meta = meta | {"duration_s": duration_s}
                     if ok:
                         out = str(payload)
-                        results[i] = out
-                        _notify_end(name, args, out, True, end_meta)
                     else:
                         e = payload
                         # Tool errors are data, not exceptions — let the model recover.
-                        msg = f"Tool raised: {type(e).__name__}: {e}"
-                        results[i] = msg
-                        _notify_end(name, args, msg, False, end_meta)
+                        out = f"Tool raised: {type(e).__name__}: {e}"
+                    out, ok = _apply_post_hook(name, args, out, ok)
+                    results[i] = out
+                    _notify_end(name, args, out, ok, end_meta)
                     _record_cache(name, cache_key, ok, payload if ok else None)
             except KeyboardInterrupt:
                 ex.shutdown(wait=False, cancel_futures=True)

@@ -978,3 +978,163 @@ def test_cache_hit_surfaces_in_tool_end_meta(install_provider):
 
     assert captured[0]["meta"].get("cache_hit") in (None, False)
     assert captured[1]["meta"].get("cache_hit") is True
+
+
+# ---------- pre/post-tool hooks ----------
+
+def test_pre_tool_hook_can_rewrite_args(install_provider):
+    """A pre_tool_hook returning (True, new_args, None) replaces the args
+    the tool receives — useful for path normalization, env injection,
+    redaction, etc."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "RAW"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    captured_args: list[dict] = []
+
+    def execute(name: str, args: dict) -> str:
+        captured_args.append(dict(args))
+        return "ok"
+
+    def pre(name: str, args: dict):
+        if name == "read_file":
+            return True, {"path": args["path"].lower()}, None
+        return True, args, None
+
+    run_agent(
+        user_input="rewrite path",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+        pre_tool_hook=pre,
+    )
+
+    assert captured_args == [{"path": "raw"}]
+
+
+def test_pre_tool_hook_can_block_call(install_provider):
+    """A pre_tool_hook returning (False, args, 'reason') blocks the tool
+    call — the model sees the reason as the tool result, execution is
+    skipped, downstream cache/post-hook do not fire."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "/etc/passwd"})
+        ]),
+        ScriptedTurn(content_chunks=["pivoted"]),
+    ])
+
+    call_count = [0]
+
+    def execute(name: str, args: dict) -> str:
+        call_count[0] += 1
+        return "should not run"
+
+    def pre(name: str, args: dict):
+        if args.get("path", "").startswith("/etc"):
+            return False, args, "policy: /etc paths are off-limits"
+        return True, args, None
+
+    response, _h, _c, _s = run_agent(
+        user_input="try /etc",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+        pre_tool_hook=pre,
+    )
+
+    assert call_count[0] == 0
+    assert response == "pivoted"
+
+
+def test_post_tool_hook_can_transform_result(install_provider):
+    """A post_tool_hook can rewrite the result string before it reaches
+    the model — useful for redaction, length capping, structured-output
+    normalization."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "secret.txt"})
+        ]),
+        ScriptedTurn(content_chunks=["seen"]),
+    ])
+
+    seen_by_end_hook: list[str] = []
+
+    def end_hook(name, args, result, ok, meta=None):
+        seen_by_end_hook.append(result)
+
+    def post(name: str, args: dict, result: str, ok: bool):
+        return "[REDACTED]", ok
+
+    def execute(name, args):
+        return "API_KEY=sk-deadbeef"
+
+    run_agent(
+        user_input="read secret",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=execute,
+        history=[],
+        post_tool_hook=post,
+        on_tool_end=end_hook,
+    )
+
+    assert seen_by_end_hook == ["[REDACTED]"]
+
+
+def test_post_tool_hook_can_override_ok_status(install_provider):
+    """A post_tool_hook can flip the ok flag — useful for marking a
+    structurally successful call as a failure (lint result reports
+    errors, HTTP 200 with error body, etc.)."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "x"})
+        ]),
+        ScriptedTurn(content_chunks=["acknowledged"]),
+    ])
+
+    seen_oks: list[bool] = []
+
+    def end_hook(name, args, result, ok, meta=None):
+        seen_oks.append(ok)
+
+    def post(name, args, result, ok):
+        return result, False
+
+    run_agent(
+        user_input="x",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=lambda n, a: "fine",
+        history=[],
+        post_tool_hook=post,
+        on_tool_end=end_hook,
+    )
+
+    assert seen_oks == [False]
+
+
+def test_no_hooks_is_pass_through(install_provider):
+    """The default (no hooks) must keep existing behavior intact — args
+    untouched, result untouched, ok untouched."""
+    install_provider([
+        ScriptedTurn(content_chunks=[], tool_calls=[
+            ToolCall("read_file", {"path": "y"})
+        ]),
+        ScriptedTurn(content_chunks=["done"]),
+    ])
+
+    end_records: list[tuple[dict, str, bool]] = []
+
+    def end_hook(name, args, result, ok, meta=None):
+        end_records.append((dict(args), result, ok))
+
+    run_agent(
+        user_input="just run",
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        execute_tool=lambda n, a: f"got {a['path']}",
+        history=[],
+        on_tool_end=end_hook,
+    )
+
+    assert end_records == [({"path": "y"}, "got y", True)]
