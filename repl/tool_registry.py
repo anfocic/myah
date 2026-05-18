@@ -121,6 +121,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [t.schema for t in _registry.values()] + _S
 
 TOOL_NAMES = [t["function"]["name"] for t in TOOL_SCHEMAS]
 
+# Versions for every tool the model can see. Registry-backed tools report
+# their declared version; the special-cased tools above are pinned to "1"
+# since they have no register() call to carry the field.
+TOOL_VERSIONS: dict[str, str] = {
+    **{t.name: t.version for t in _registry.values()},
+    **{s["function"]["name"]: "1" for s in _SPECIAL_SCHEMAS},
+}
+
 
 def make_execute_tool(state: State, permission_check=None):
     """Factory so the harness_info tool can close over the live REPL state
@@ -155,7 +163,7 @@ def make_execute_tool(state: State, permission_check=None):
                     args["path"],
                 )
             elif name == "harness_info":
-                return harness_info(state, TOOL_NAMES)
+                return harness_info(state, TOOL_NAMES, TOOL_VERSIONS)
             elif name == "todo_write":
                 return todo_write(state, args.get("todos"))
             elif name == "set_var":
