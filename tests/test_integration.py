@@ -785,7 +785,12 @@ def test_retry_skipped_when_partial_content_already_streamed(monkeypatch):
     finally:
         set_active_provider(original)
 
-    assert response == ""
+    # The partial bytes that already streamed are preserved (the user saw
+    # them; tossing them silently would break /retry continuity). The key
+    # guarantee this test still pins: the provider was called exactly
+    # ONCE — retry must not double-render the visible output.
+    assert "halfway there" in response
+    assert "[stream interrupted" in response
     assert provider.call_count == 1
     assert stats.get("provider_retries") in (None, 0)
     assert "provider_error" in stats
@@ -1138,3 +1143,99 @@ def test_no_hooks_is_pass_through(install_provider):
     )
 
     assert end_records == [({"path": "y"}, "got y", True)]
+
+
+# ---------- resumable streaming: partial content preservation ----------
+
+def _install_partial_then_error_provider(content_chunks: list[str]):
+    """Install a provider that streams `content_chunks` then raises a
+    ProviderError mid-stream. Returns the test's previous provider so the
+    caller can restore it in a try/finally."""
+    from providers import get_active_provider
+
+    class PartialThenErrorProvider:
+        name = "fake-partial-err"
+        model = "fake-partial-v1"
+        context_size = 32768
+
+        def stream_chat(self, messages, tools, num_ctx):
+            for chunk in content_chunks:
+                yield StreamChunk(content_delta=chunk)
+            raise ProviderError("connection lost", retryable=True)
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    original = get_active_provider()
+    set_active_provider(PartialThenErrorProvider())
+    return original
+
+
+def test_mid_stream_error_preserves_partial_content_in_response():
+    """When the stream breaks after visible content, the partial text must
+    be returned as the response — not silently discarded. The user
+    already saw it in the terminal; losing it from `history` would also
+    break `/retry` continuity."""
+    original = _install_partial_then_error_provider(["Hello ", "from the ", "model"])
+    try:
+        response, history, _ctx, stats = run_agent(
+            user_input="say hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert "Hello from the model" in response
+    # The user-visible turn must be persisted with an interruption marker so
+    # the model can see on next turn that its prior reply was cut off.
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+    assert "Hello from the model" in history[1]["content"]
+    assert "[stream interrupted" in history[1]["content"]
+    assert "provider_error" in stats
+
+
+def test_mid_stream_error_with_no_content_preserves_empty_response(monkeypatch):
+    """The existing pre-stream / zero-content error path must remain:
+    no partial content → "" response, empty history. Same shape as the
+    existing test_provider_error_is_reported_in_stats test."""
+    monkeypatch.setattr("agent.loop._sleep_for_retry", lambda _attempt: None)
+    original = _install_partial_then_error_provider([])
+    try:
+        response, history, _ctx, stats = run_agent(
+            user_input="say hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == ""
+    assert history == []
+    assert "provider_error" in stats
+
+
+def test_mid_stream_error_marker_is_visible_in_history():
+    """Pin the interruption marker text so future code (UI / re-render /
+    summarization) can locate stream-interrupted turns cheaply."""
+    original = _install_partial_then_error_provider(["partial reply"])
+    try:
+        _response, history, _ctx, _stats = run_agent(
+            user_input="x",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assistant_msg = history[-1]
+    assert assistant_msg["content"].startswith("partial reply")
+    assert "[stream interrupted" in assistant_msg["content"]
