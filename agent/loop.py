@@ -408,6 +408,32 @@ def run_agent(
                 console.print(
                     f"\n[red]Provider error ({provider.name}):[/red] {turn.provider_error}"
                 )
+            # Partial-content preservation: if visible bytes already
+            # streamed before the break, persist them as the assistant turn
+            # so /retry and history continuity work — the user already SAW
+            # them on screen; discarding them silently breaks the model's
+            # ability to reference its own previous reply on the next turn.
+            if turn.content:
+                preserved = (
+                    f"{turn.content}\n\n"
+                    f"[stream interrupted: {provider.name}: {turn.provider_error}]"
+                )
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "assistant", "content": preserved})
+                return (
+                    preserved,
+                    history,
+                    ctx_used,
+                    {
+                        "ttft_ms": turn.ttft_ms,
+                        "completion_tokens": None,
+                        "tok_per_s": None,
+                        "provider_error": f"{provider.name}: {turn.provider_error}",
+                        "reasoning": "\n\n".join(reasoning_total),
+                        "provider_retries": provider_retries_total or None,
+                        "stream_interrupted": True,
+                    },
+                )
             return (
                 "",
                 history,
