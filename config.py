@@ -134,6 +134,21 @@ MAX_AGENT_ITERATIONS = int(env_override(
 ))
 SPIN_WINDOW = 3  # hardcoded — changing this breaks the spinning-call guard tests
 
+# Transient provider failures (network unreachable, timeout, HTTP 429 / 5xx)
+# get a bounded retry budget per turn. Higher counts mostly help recover from
+# rate-limit bursts on hosted providers; local servers either work or don't.
+MAX_PROVIDER_RETRIES = int(env_override(
+    "MYAH_MAX_PROVIDER_RETRIES", "behavior.max_provider_retries",
+    _behavior_cfg.get("max_provider_retries", 3),
+))
+# Exponential backoff base: sleep(attempt) = BASE * (2 ** (attempt - 1)) + jitter.
+# 1.0 means 1s / 2s / 4s — gentle enough for transient 5xx, short enough that
+# the user notices the wait but doesn't bail.
+PROVIDER_RETRY_BASE_S = float(env_override(
+    "MYAH_PROVIDER_RETRY_BASE_S", "behavior.provider_retry_base_s",
+    _behavior_cfg.get("provider_retry_base_s", 1.0),
+))
+
 # ── UI ───────────────────────────────────────────────────────────────────────
 # Phosphor accent hue. The whole TUI reads its dominant color from this one
 # knob — masthead, section brackets, prompt floor, tool glyphs. Themes
