@@ -124,3 +124,33 @@ def test_summarize_dropped_extractive_fallback():
         result = summarize_dropped(dropped)
     assert result
     assert "auth module" in result
+
+
+def test_summarize_dropped_handles_list_content_user_message():
+    """User messages with image attachments arrive as list-of-blocks
+    content. The extractive fallback must read the text block(s) — a
+    naive `.split()` on the list shape would crash and leave summary
+    callers without a fallback."""
+    dropped = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look at this screenshot of the bug"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "AAAA",
+                    },
+                },
+            ],
+        },
+        {"role": "assistant", "content": "noted"},
+    ]
+    with patch("agent.context.get_active_provider") as mock_get:
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = ProviderError("down")
+        mock_get.return_value = mock_provider
+        result = summarize_dropped(dropped)
+    assert "screenshot of the bug" in result
