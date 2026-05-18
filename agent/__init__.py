@@ -17,6 +17,7 @@ READ_ONLY_TOOLS = frozenset(
     {"glob", "grep", "read_file", "get_current_time", "harness_info", "web_search",
      "web_fetch", "pwd", "cd", "git_status", "git_diff", "git_log", "git_branch_list",
      "vault_search", "note_read", "note_search", "note_list",
+     "note_backlinks", "note_by_tag",
      "todo_write",
      "set_var", "get_var", "list_vars", "unset_var"}
 )
