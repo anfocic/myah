@@ -315,6 +315,13 @@ def run_agent(
     # not just the last step's retry count.
     provider_retries_total = 0
 
+    # Per-call idempotency cache: maps (tool_name, canonical_args_json) to
+    # the result string of a prior successful read-only call within this
+    # same run_agent invocation. Mutating calls clear the cache (the world
+    # changed; older reads are stale). Cache does NOT persist across
+    # run_agent calls — every fresh user turn starts with a clean slate.
+    idempotency_cache: dict[tuple[str, str], str] = {}
+
     # Loop guards (CONCEPTS §loop-control). Both are per-call — a fresh
     # user turn resets the counters so a long session doesn't gradually
     # starve the cap or accumulate phantom spin history.
@@ -469,6 +476,7 @@ def run_agent(
                 console=console,
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
+                idempotency_cache=idempotency_cache,
             )
             for content_str in results:
                 # Two-pass processing on every tool result:
@@ -549,6 +557,7 @@ def _run_tools_parallel(
     console=None,
     on_tool_start=None,
     on_tool_end=None,
+    idempotency_cache: dict[tuple[str, str], str] | None = None,
 ) -> list[str]:
     """Serial permission gate (user prompts can't be parallel) → parallel
     execution for approved calls → results returned in original tool_calls
@@ -563,7 +572,16 @@ def _run_tools_parallel(
     in request order; end fires in completion order (parallel). Both receive
     a small `meta` payload with a stable tool id (`T01`, `T02`, ...) and, on
     end, the execution duration in seconds. ok=False means denied,
-    plan-blocked, or raised."""
+    plan-blocked, or raised.
+
+    `idempotency_cache` is a (name, canonical_args) → result map owned by
+    `run_agent` and shared across every iteration of one user turn. Repeat
+    read-only tool calls within that turn hit the cache instead of
+    re-executing; any successful mutating call clears the cache so a
+    subsequent read reflects the new world state. Same-batch duplicates
+    still execute twice (the cache is only populated after a result
+    arrives) — that case is rare enough not to be worth a pending-keys
+    second layer."""
 
     def _notify_start(name, args, meta):
         if on_tool_start:
@@ -589,7 +607,7 @@ def _run_tools_parallel(
     if permission_check is None:
         permission_check = lambda name, args, meta=None: name in READ_ONLY_TOOLS
 
-    approved: list[tuple[int, str, dict, dict]] = []
+    approved: list[tuple[int, str, dict, dict, tuple[str, str] | None]] = []
     total = len(tool_calls)
     for i, tc in enumerate(tool_calls):
         name = tc.name
@@ -615,20 +633,40 @@ def _run_tools_parallel(
             results[i] = msg
             _notify_end(name, args, msg, False, meta)
         else:
-            approved.append((i, name, args, meta))
+            cache_key = None
+            if idempotency_cache is not None and name in READ_ONLY_TOOLS:
+                cache_key = (name, json.dumps(args, sort_keys=True, default=str))
+                if cache_key in idempotency_cache:
+                    cached = idempotency_cache[cache_key]
+                    results[i] = cached
+                    _notify_end(name, args, cached, True, meta | {"cache_hit": True})
+                    continue
+            approved.append((i, name, args, meta, cache_key))
+
+    def _record_cache(name: str, cache_key, ok: bool, payload) -> None:
+        """Maintain the per-turn cache: stash successful read-only results,
+        invalidate the entire cache on any mutating call (the world changed
+        so older reads can no longer be trusted)."""
+        if idempotency_cache is None:
+            return
+        if name not in READ_ONLY_TOOLS:
+            idempotency_cache.clear()
+            return
+        if ok and cache_key is not None:
+            idempotency_cache[cache_key] = str(payload)
 
     if approved:
         # Once a batch contains any mutating tool, run the whole batch
         # serially in request order. This avoids stale reads and write races
         # across same-turn edits against the same workspace state.
-        run_serially = any(name not in READ_ONLY_TOOLS for _, name, _, _ in approved)
+        run_serially = any(name not in READ_ONLY_TOOLS for _, name, _, _, _ in approved)
 
         # No separate "Running tools (n/m)" status line in either branch —
         # on_tool_start / on_tool_end already render each tool's own block
         # (`● name args` / `  └ summary`), which carries the same progress
         # signal plus the result content.
         if run_serially:
-            for i, name, args, meta in approved:
+            for i, name, args, meta, cache_key in approved:
                 ok, payload, duration_s = _timed_tool_call(execute_tool, name, args)
                 end_meta = meta | {"duration_s": duration_s}
                 if ok:
@@ -640,6 +678,7 @@ def _run_tools_parallel(
                     msg = f"Tool raised: {type(e).__name__}: {e}"
                     results[i] = msg
                     _notify_end(name, args, msg, False, end_meta)
+                _record_cache(name, cache_key, ok, payload if ok else None)
         else:
             # NOTE: cancel_futures=True only cancels futures that haven't
             # started yet. A bash tool already mid-`subprocess.run` keeps
@@ -649,11 +688,13 @@ def _run_tools_parallel(
             ex = ThreadPoolExecutor(max_workers=len(approved))
             try:
                 future_to_idx = {
-                    ex.submit(_timed_tool_call, execute_tool, name, args): (i, name, args, meta)
-                    for (i, name, args, meta) in approved
+                    ex.submit(_timed_tool_call, execute_tool, name, args): (
+                        i, name, args, meta, cache_key,
+                    )
+                    for (i, name, args, meta, cache_key) in approved
                 }
                 for fut in as_completed(future_to_idx):
-                    i, name, args, meta = future_to_idx[fut]
+                    i, name, args, meta, cache_key = future_to_idx[fut]
                     ok, payload, duration_s = fut.result()
                     end_meta = meta | {"duration_s": duration_s}
                     if ok:
@@ -666,6 +707,7 @@ def _run_tools_parallel(
                         msg = f"Tool raised: {type(e).__name__}: {e}"
                         results[i] = msg
                         _notify_end(name, args, msg, False, end_meta)
+                    _record_cache(name, cache_key, ok, payload if ok else None)
             except KeyboardInterrupt:
                 ex.shutdown(wait=False, cancel_futures=True)
                 raise
