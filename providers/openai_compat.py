@@ -431,6 +431,31 @@ def _translate_messages(
             keys = {"role", "content", "name"}
             if include_reasoning:
                 keys.add("reasoning_content")
-            out.append({k: v for k, v in msg.items() if k in keys})
+            translated_msg = {k: v for k, v in msg.items() if k in keys}
+            content = translated_msg.get("content")
+            if isinstance(content, list):
+                translated_msg["content"] = _translate_content_blocks(content)
+            out.append(translated_msg)
 
+    return out
+
+
+def _translate_content_blocks(blocks: list) -> list[dict]:
+    """Translate our internal block list to OpenAI's vision-input shape.
+    Text blocks pass through; image blocks become `image_url` entries
+    with a `data:<media>;base64,<data>` URI."""
+    out: list[dict] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            out.append({"type": "text", "text": block.get("text") or ""})
+        elif block.get("type") == "image":
+            source = block.get("source") or {}
+            media = source.get("media_type") or "image/png"
+            data = source.get("data") or ""
+            out.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media};base64,{data}"},
+            })
     return out

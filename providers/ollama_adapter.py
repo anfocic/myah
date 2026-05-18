@@ -146,16 +146,45 @@ class OllamaProvider(Provider):
 
 
 def _strip_internal_tool_calls(messages: list[dict]) -> list[dict]:
-    """agent.py stores tool_calls on assistant messages as `{"name", "arguments"}`
-    so the openai-compat adapter can synthesize IDs. Ollama's pydantic validator
-    requires the nested `{"function": {"name", "arguments"}}` shape — and the
-    Ollama wire protocol doesn't actually need tool_calls on replayed assistant
-    messages anyway (the tool role messages that follow carry the information).
-    Cheapest fix: drop the field before sending."""
+    """Translate the internal message list to what Ollama's chat endpoint
+    expects.
+
+    Two transformations happen here:
+
+    1. agent.py stores tool_calls on assistant messages as `{"name",
+       "arguments"}` so the openai-compat adapter can synthesize IDs.
+       Ollama's pydantic validator requires the nested `{"function":
+       {"name", "arguments"}}` shape — and the Ollama wire protocol
+       doesn't actually need tool_calls on replayed assistant messages
+       anyway (the tool role messages that follow carry the
+       information). Cheapest fix: drop the field before sending.
+
+    2. List-of-blocks content (image attachments) is flattened: text
+       blocks concat into a single content string, image blocks go into
+       a top-level `images: [base64, ...]` list — Ollama's native shape
+       for vision-capable models. A plain-string content is left alone.
+    """
     out = []
     for m in messages:
-        if m.get("role") == "assistant" and "tool_calls" in m:
-            out.append({k: v for k, v in m.items() if k != "tool_calls"})
-        else:
-            out.append(m)
+        msg = m
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            images: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text") or "")
+                elif block.get("type") == "image":
+                    data = (block.get("source") or {}).get("data") or ""
+                    if data:
+                        images.append(data)
+            msg = {k: v for k, v in msg.items() if k != "content"}
+            msg["content"] = "\n".join(t for t in text_parts if t)
+            if images:
+                msg["images"] = images
+        out.append(msg)
     return out
