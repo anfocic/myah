@@ -23,14 +23,24 @@ def _git_branch(cwd: str | None = None) -> str:
 
 # Read-only shape — accepts both a plain dict and main.py's State TypedDict.
 # Declaring the full State shape here would pull a circular import from main.
-def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
+def harness_snapshot(
+    state: Mapping[str, Any],
+    tool_names: list[str],
+    tool_versions: Mapping[str, str] | None = None,
+) -> dict:
     """Single source of truth for fields both /context (rich) and the
     harness_info tool (plaintext) render. Reads model + provider from the
-    live adapter so /model swaps show up immediately."""
+    live adapter so /model swaps show up immediately.
+
+    `tool_versions` maps tool name -> version string. Tools missing from the
+    mapping are reported as version "1" so callers can omit it for the legacy
+    case.
+    """
     ctx_used = state["ctx_used"]
     provider = get_active_provider()
     cwd = state.get("cwd") or os.getcwd()
     ctx_size = get_context_size()
+    versions = dict(tool_versions or {})
     return {
         "model": provider.model,
         "provider": provider.name,
@@ -43,13 +53,19 @@ def harness_snapshot(state: Mapping[str, Any], tool_names: list[str]) -> dict:
         "git_branch": _git_branch(cwd),
         "date": date.today().isoformat(),
         "tools": tool_names,
+        "tool_versions": {name: versions.get(name, "1") for name in tool_names},
     }
 
 
-def harness_info(state: Mapping[str, Any], tool_names: list[str]) -> str:
+def harness_info(
+    state: Mapping[str, Any],
+    tool_names: list[str],
+    tool_versions: Mapping[str, str] | None = None,
+) -> str:
     # ctx_used is the previous turn's settled value — there is no "current
     # turn" count because the model is calling this from inside one.
-    s = harness_snapshot(state, tool_names)
+    s = harness_snapshot(state, tool_names, tool_versions)
+    tools_rendered = ", ".join(f"{n} (v{s['tool_versions'][n]})" for n in s["tools"])
     return (
         f"model: {s['model']} ({s['provider']})\n"
         f"num_ctx: {s['num_ctx']}\n"
@@ -59,5 +75,5 @@ def harness_info(state: Mapping[str, Any], tool_names: list[str]) -> str:
         f"cwd: {s['cwd']}\n"
         f"git_branch: {s['git_branch']}\n"
         f"date: {s['date']}\n"
-        f"tools: {', '.join(s['tools'])}"
+        f"tools: {tools_rendered}"
     )

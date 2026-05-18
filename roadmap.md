@@ -41,7 +41,7 @@ Merged from `agentic_harness_must_haves.md` and `agentic_harness_borrowed_ideas.
 | CWD-aware path resolution | Done | `tools/cd.py:63-75` — `resolve_against` bridge |
 | Sub-agent spawning | Done | `tools/subagent.py:26-96`, depth 1, thread-locked |
 | Vault knowledge base search | Done | `tools/vault.py:37-105` |
-| Tool registry versioning | Not done | Registry exists but no version field or swap-by-version |
+| Tool registry versioning | Done | `tools/spec.py` — `version: str = "1"` on `Tool` + `register()`, surfaced as `(vN)` suffix on schema description and in `harness_info` output |
 | Step-level retries with backoff | Not done | `/retry` retries the whole turn, not individual tool calls |
 | Idempotency keys on tool calls | Not done | Spin guard halts rather than deduplicates |
 
@@ -76,8 +76,8 @@ Ordered by impact-to-effort ratio:
 
 1. ~~Error recovery hints~~ — shipped.
 2. ~~Todo list as working memory~~ — shipped.
-3. **Tool registry versioning** — add `version: str` to `Tool` dataclass. Low effort.
-4. **Conversation variables** — `set_var(name, value)` / `get_var(name)` tools. Medium effort, enables persistent cross-turn state without history pollution.
+3. ~~Tool registry versioning~~ — shipped.
+4. ~~Conversation variables~~ — shipped.
 5. **Step-level retries with backoff** — wrap tool execution in retry loop. Medium effort.
 6. **Idempotency keys** — deduplicate by `(name, canonical_args)` within a turn. Medium effort.
 7. **Explicit state machine** — model loop as graph with nodes/edges. High effort, structural change.
