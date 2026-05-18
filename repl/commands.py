@@ -254,6 +254,16 @@ def cmd_stats(state: State, arg: str = "") -> None:
     if last.get("completion_tokens"):
         rows.append(("gen", _stat_bar(last["completion_tokens"], 2000, 4096),
                      f"{last['completion_tokens']} tok"))
+    if last.get("cost_usd") is not None:
+        from providers.pricing import format_cost_usd
+        # Bar caps are in cents, scaled so $0.01 fills the "good" zone and
+        # $0.10 is the wall — keeps a normal turn readable without making
+        # an Opus-trajectory row look identical to an ollama one.
+        rows.append((
+            "cost",
+            _stat_bar(last["cost_usd"], cap=0.01, max_=0.10),
+            format_cost_usd(last["cost_usd"]),
+        ))
     for label, bar, value in rows:
         console.print(
             f"  [{phosphor.DIM}]{label:<6}[/] {bar}  [{phosphor.WHITE}]{value}[/]"

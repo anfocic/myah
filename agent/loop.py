@@ -28,6 +28,7 @@ from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW, get_context_size
 from display import StreamingMarkdown
 from providers import Provider, ProviderError, Usage, get_active_provider
 from providers.base import ToolCall
+from providers.pricing import compute_cost_usd
 from security import annotate_if_injected
 
 
@@ -286,6 +287,12 @@ def run_agent(
     # a multi-tool trajectory, not only the final answer's reasoning.
     reasoning_total: list[str] = []
 
+    # Cost lives on the whole run_agent call, not the final turn alone — a
+    # tool-heavy trajectory has multiple provider round-trips and you pay
+    # for every prompt + every completion. Accumulate as we go.
+    prompt_tokens_total = 0
+    completion_tokens_total = 0
+
     # Loop guards (CONCEPTS §loop-control). Both are per-call — a fresh
     # user turn resets the counters so a long session doesn't gradually
     # starve the cap or accumulate phantom spin history.
@@ -336,6 +343,10 @@ def run_agent(
 
         if turn.reasoning:
             reasoning_total.append(turn.reasoning)
+
+        if turn.usage:
+            prompt_tokens_total += turn.usage.prompt_tokens or 0
+            completion_tokens_total += turn.usage.completion_tokens or 0
 
         if turn.provider_error is not None:
             if console:
@@ -441,6 +452,11 @@ def run_agent(
             tok_per_s = None
             if completion_tokens and stream_s and stream_s > 0:
                 tok_per_s = completion_tokens / stream_s
+            cost_usd = compute_cost_usd(
+                provider.name, provider.model,
+                prompt_tokens_total or None,
+                completion_tokens_total or None,
+            )
             stats = {
                 "ttft_ms": turn.ttft_ms,
                 "completion_tokens": completion_tokens,
@@ -449,6 +465,12 @@ def run_agent(
                 # trajectory, joined by blank lines. Empty string for
                 # non-reasoning models. Read by eval runner + /debug.
                 "reasoning": "\n\n".join(reasoning_total),
+                # Cumulative input/output tokens across every iteration
+                # in this run_agent call, plus the priced cost. cost_usd
+                # is None when the model isn't in providers/pricing.py.
+                "prompt_tokens_total": prompt_tokens_total or None,
+                "completion_tokens_total": completion_tokens_total or None,
+                "cost_usd": cost_usd,
             }
             return content, history, ctx_used, stats
 
