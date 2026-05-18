@@ -89,17 +89,44 @@ def _mode_labels(state: State) -> list[str]:
 def build_prompt(state: State) -> FormattedText:
     """The Phosphor prompt floor — `myah@local:~/cwd$`. The accent hue carries
     `myah@local` and the `$`; the cwd rides in magenta (the design's branch/
-    identity slot). Used as the input window's line prefix in `repl/app.py`."""
+    identity slot). Used as the input window's line prefix in `repl/app.py`.
+
+    When a Ctrl+V image is staged for the next turn, the prompt floor leads
+    with `[img NNk]` in cyan so the user knows what's about to be sent."""
     accent = phosphor.accent_pt()
     cwd = _tilde_cwd(state.get("cwd", os.getcwd()))
-    return FormattedText(
-        [
-            (f"{accent} bold", "myah@local"),
-            ("ansibrightblack", ":"),
-            ("ansimagenta", cwd),
-            (f"{accent} bold", "$ "),
-        ]
-    )
+    fragments: list[tuple[str, str]] = []
+    pending_size = state.get("_pending_image_size")
+    if pending_size:
+        kb = max(1, pending_size // 1024)
+        fragments.append(("ansicyan bold", f"[img {kb}k] "))
+    fragments.extend([
+        (f"{accent} bold", "myah@local"),
+        ("ansibrightblack", ":"),
+        ("ansimagenta", cwd),
+        (f"{accent} bold", "$ "),
+    ])
+    return FormattedText(fragments)
+
+
+def compose_user_message(text: str, pending_image: tuple[str, str] | None):
+    """Build the run_agent user_input from the prompt-buffer text and an
+    optional pending image. Returns either the plain string (no image)
+    or our internal list-of-blocks shape (text + image) so the provider
+    translation layer can rewrite it per backend.
+
+    `pending_image` is `(base64_data, media_type)` as produced by
+    `tools.clipboard.get_clipboard_image()`. Empty text is preserved —
+    the user can paste an image and hit Enter without typing."""
+    if pending_image is None:
+        return text
+    b64, media = pending_image
+    return [
+        {"type": "text", "text": text},
+        {"type": "image", "source": {
+            "type": "base64", "media_type": media, "data": b64,
+        }},
+    ]
 
 
 class SlashCompleter(Completer):

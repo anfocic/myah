@@ -53,8 +53,10 @@ from repl.ui import (
     build_prompt,
     build_transmission_header,
     build_turn_footer,
+    compose_user_message,
     render_session_rail,
 )
+from tools.clipboard import get_clipboard_image
 
 RAIL_WIDTH = 32
 # Slash commands that shell out (spawn $EDITOR, run subprocesses) — these must
@@ -226,6 +228,11 @@ class ReplApp:
                 self._abort_turn()
             else:
                 self.input_buffer.reset()
+                # A staged Ctrl+V image is also abandoned: the user just
+                # signalled "discard what I was about to send."
+                if "_pending_image" in self.state:
+                    self._clear_pending_image()
+                    self.app.invalidate()
 
         @kb.add("escape", eager=True)
         def _(event):
@@ -250,6 +257,25 @@ class ReplApp:
                 self.bridge.resolve(choice)
                 self.app.invalidate()
 
+        @kb.add("c-v")
+        def _(event):
+            # Ctrl+V grabs an image off the macOS clipboard for the next
+            # turn. Silent no-op on every non-image clipboard state
+            # (text-only, oversized, osascript missing) so a user pressing
+            # Ctrl+V to paste TEXT (rare — Cmd+V is the macOS norm) doesn't
+            # see a confusing error; their text paste still works through
+            # the terminal's own handler.
+            if self.bridge.pending is not None or self._turn_running():
+                return
+            img = get_clipboard_image()
+            if img is None:
+                return
+            b64, media, size = img
+            self.state["_pending_image"] = b64
+            self.state["_pending_image_size"] = size
+            self.state["_pending_image_media"] = media
+            self.app.invalidate()
+
         return kb
 
     # -- input handling ------------------------------------------------------
@@ -258,7 +284,8 @@ class ReplApp:
         """Buffer accept handler. Returns False so the input line is cleared
         after every submission."""
         text = buff.text.strip()
-        if not text:
+        has_pending_image = "_pending_image" in self.state
+        if not text and not has_pending_image:
             return False
         if self._turn_running():
             self.console.print(
@@ -267,13 +294,32 @@ class ReplApp:
             self.app.invalidate()
             return False
         if text.lower() == "exit":
+            self._clear_pending_image()
             self._request_exit()
             return False
         if text.startswith("/"):
+            # Slash commands don't consume the pending image — the user can
+            # toggle plan mode / inspect /context and still send their image.
             self._run_slash(text)
             return False
-        self._start_turn(text)
+        # Pop pending image (if any) AFTER all guard branches so a misfired
+        # accept doesn't silently drop a staged image.
+        pending = None
+        if has_pending_image:
+            b64 = self.state.pop("_pending_image")
+            media = self.state.pop("_pending_image_media", "image/png")
+            self.state.pop("_pending_image_size", None)
+            pending = (b64, media)
+        user_input = compose_user_message(text, pending)
+        self._start_turn(user_input)
         return False
+
+    def _clear_pending_image(self) -> None:
+        """Drop any staged Ctrl+V image. Called on exit and on abort so a
+        stale image cannot leak into the next prompt."""
+        self.state.pop("_pending_image", None)
+        self.state.pop("_pending_image_size", None)
+        self.state.pop("_pending_image_media", None)
 
     def _run_slash(self, text: str) -> None:
         cmd = text.split()[0]
@@ -301,7 +347,7 @@ class ReplApp:
     def _turn_running(self) -> bool:
         return self.turn_thread is not None and self.turn_thread.is_alive()
 
-    def _start_turn(self, user_input: str) -> None:
+    def _start_turn(self, user_input: str | list) -> None:
         # Daemon thread: if a turn is wedged in a network read at exit, the
         # injected KeyboardInterrupt can't land until the socket returns, and a
         # non-daemon thread would then pin the whole process open. A daemon is
@@ -313,7 +359,7 @@ class ReplApp:
         )
         self.turn_thread.start()
 
-    def _turn_worker(self, user_input: str) -> None:
+    def _turn_worker(self, user_input: str | list) -> None:
         """Port of the old `main.py` per-turn block, run on a worker thread."""
         self.sess_state = "STREAM"
         self.app.invalidate()

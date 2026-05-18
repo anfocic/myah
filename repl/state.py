@@ -45,6 +45,13 @@ class State(TypedDict):
     # via set_var / get_var / list_vars / unset_var. Session-scoped (not
     # currently persisted across `--resume`). See tools/vars.py.
     vars: dict[str, str]
+    # Image staged for the next user turn via Ctrl+V. All three keys are
+    # transient — popped in `_on_accept` once the message is composed,
+    # and cleared on KeyboardInterrupt so a stale image doesn't leak
+    # into the next prompt. Not serialized across `--resume`.
+    _pending_image: NotRequired[str]         # base64 data
+    _pending_image_size: NotRequired[int]    # source bytes (for the [img Nk] tag)
+    _pending_image_media: NotRequired[str]   # e.g. "image/png" / "image/jpeg"
 
 
 def new_state() -> State:

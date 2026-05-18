@@ -205,7 +205,7 @@ def _halt_run(
     *,
     reason: str,
     detail: str,
-    user_input: str,
+    user_input: str | list,
     history: list,
     ctx_used: int,
     console,
@@ -266,7 +266,7 @@ def _timed_tool_call(execute_tool, name: str, args: dict) -> tuple[bool, object,
 
 
 def run_agent(
-    user_input: str,
+    user_input: str | list,
     tools: list,
     execute_tool,
     history: list | None = None,
