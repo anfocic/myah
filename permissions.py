@@ -143,10 +143,41 @@ def _print_permission_preview(console, name: str, args) -> None:
         content = str(args.get("content", ""))
         n_bytes, n_lines = _content_stats(content)
         line_label = "line" if n_lines == 1 else "lines"
+
+        # If the target already exists, the model is overwriting — show a
+        # diff so the user can see exactly what's changing, the same way
+        # edit_file's preview does. Only fall back to a raw content preview
+        # for true creation cases.
+        existing: str | None = None
+        try:
+            p = Path(path)
+            if p.is_file():
+                existing = p.read_text()
+        except OSError:
+            existing = None
+
+        mode = "overwrite" if existing is not None else "create"
         console.print(
-            f"[dim]path[/dim] {path} [dim]· size[/dim] {n_bytes} bytes "
+            f"[dim]path[/dim] {path} [dim]· mode[/dim] {mode} "
+            f"[dim]· size[/dim] {n_bytes} bytes "
             f"[dim]· {n_lines} {line_label}[/dim]"
         )
+
+        if existing is not None:
+            diff = build_unified_diff(path, existing, content, context=1)
+            if diff.strip():
+                console.print(
+                    Panel(
+                        Syntax(diff, "diff", theme="ansi_dark", word_wrap=True),
+                        title="[dim]diff preview[/dim]",
+                        border_style="dim",
+                        padding=(0, 1),
+                    )
+                )
+            else:
+                console.print("[dim]No textual diff to preview (content unchanged).[/dim]")
+            return
+
         preview = _content_preview(content)
         if preview:
             lexer = "bash" if Path(path).suffix == ".sh" else "text"
