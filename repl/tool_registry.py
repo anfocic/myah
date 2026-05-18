@@ -27,6 +27,7 @@ import tools.notes  # noqa: F401
 import tools.search  # noqa: F401
 import tools.utils  # noqa: F401
 import tools.vault  # noqa: F401
+import tools.web_fetch  # noqa: F401
 import tools.web_search  # noqa: F401
 from repl.console import console
 from repl.state import State
