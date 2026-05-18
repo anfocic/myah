@@ -140,3 +140,76 @@ def test_count_tokens_model_name_keys_encoding_cache():
     assert "gpt-4o" in _encoding_cache
     # Two distinct cached encodings
     assert _encoding_cache["gpt-4"] is not _encoding_cache["gpt-4o"]
+
+
+# ---------- list-content (image attachments) handling ----------
+
+def test_count_message_tokens_with_list_content_sums_text_parts():
+    """When content is a list of blocks, only text parts contribute to
+    the encoded count — base64 image data must NOT be tokenized (a 3MB
+    image → 4MB base64 → ~1M tokens otherwise, destroying any trim
+    decision the loop tries to make)."""
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe this:"},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    # 100KB of fake base64 would tokenize to ~25K tokens if
+                    # naively counted — we want it to add the flat per-image
+                    # tile heuristic instead.
+                    "data": "A" * 100_000,
+                },
+            },
+        ],
+    }
+    n = count_message_tokens(msg)
+    # Text + flat image charge + per-message overhead, well under 1000.
+    assert n < 1000
+
+
+def test_count_message_tokens_charges_flat_per_image():
+    """Each image adds a fixed ~85-token cost (OpenAI low-res tile
+    heuristic). Two images charge twice as much as one."""
+    text_only = {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+    one_img = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+        ],
+    }
+    two_img = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+        ],
+    }
+    n0 = count_message_tokens(text_only)
+    n1 = count_message_tokens(one_img)
+    n2 = count_message_tokens(two_img)
+    assert n1 > n0
+    assert n2 - n1 == n1 - n0  # each image costs the same flat amount
+
+
+def test_estimate_tokens_char4_handles_list_content():
+    """The cheap fallback estimator must also tolerate list content —
+    otherwise an image-bearing message crashes the path tiktoken errors
+    fall back to."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "x" * 400},
+                {"type": "image", "source": {"data": "A" * 50_000}},
+            ],
+        }
+    ]
+    n = _estimate_tokens_char4(messages)
+    # Text 400 / 4 = 100, image stays flat — must NOT count base64 length.
+    assert n < 500

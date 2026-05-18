@@ -112,6 +112,21 @@ def microcompact(messages: list, keep_recent: int = MICROCOMPACT_KEEP_RECENT) ->
     return n
 
 
+def _user_text(content) -> str:
+    """Best-effort text extraction from a user message's content. Handles
+    plain strings and the list-of-blocks shape used by image attachments
+    (returns concatenated text blocks only, image blocks ignored)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+        return " ".join(p for p in parts if p)
+    return ""
+
+
 def _extractive_summary(dropped: list) -> str:
     """Build a cheap local summary from dropped turns when the LLM call
     fails. Captures first sentence of each user message so context isn't
@@ -124,7 +139,7 @@ def _extractive_summary(dropped: list) -> str:
     for m in dropped:
         if m.get("role") != "user":
             continue
-        text = m.get("content", "")
+        text = _user_text(m.get("content", ""))
         # First sentence: up to first period, or first 80 chars.
         sentence = text.split(".")[0].strip()
         if len(sentence) > 80:
