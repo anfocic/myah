@@ -311,15 +311,32 @@ def cmd_debug(state: State, arg: str = "") -> None:
 def cmd_retry(state: State, arg: str = "") -> None:
     """Pop the last user/assistant pair from history and re-run the user
     input. Useful when the model flubbed and we want a fresh sample without
-    retyping. No-op (with a note) if there's no prior turn."""
+    retyping. No-op (with a note) if there's no prior turn.
+
+    Special case: when the last assistant message carries the
+    `[stream interrupted` marker left by partial-stream preservation
+    (PR #106), keep the pair intact and queue a "Continue." nudge so the
+    model resumes from its own partial reply rather than starting over
+    and discarding all the work that already streamed."""
     history = state["history"]
     if len(history) < 2 or history[-2].get("role") != "user":
         console.print("[dim]↳ no previous turn to retry[/dim]")
         return
+    last_assistant = history[-1]
+    if (
+        last_assistant.get("role") == "assistant"
+        and "[stream interrupted" in (last_assistant.get("content") or "")
+    ):
+        state["_retry_input"] = "Continue."
+        console.print(
+            "[dim]↳ resuming interrupted reply (model picks up from its partial output)[/dim]"
+        )
+        return
     last_user = history[-2].get("content", "")
     del history[-2:]
     state["_retry_input"] = last_user
-    console.print(f"[dim]↳ retrying: {last_user[:80]}[/dim]")
+    preview = last_user if isinstance(last_user, str) else "[image-bearing message]"
+    console.print(f"[dim]↳ retrying: {preview[:80]}[/dim]")
 
 
 def cmd_compact(state: State, arg: str = "") -> None:

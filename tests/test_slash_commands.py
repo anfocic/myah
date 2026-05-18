@@ -1,6 +1,6 @@
 """handle_slash dispatch: uniform (state, arg='') signature; unknown
 commands reported without crash; commands with no-arg ignore stray args."""
-from repl.commands import handle_slash
+from repl.commands import cmd_retry, handle_slash
 
 
 def test_unknown_command_returns_true_without_crash(state):
@@ -291,3 +291,50 @@ def test_profile_renders_cost_section_when_priced(state, monkeypatch, capsys):
     assert "system" in out
     # Total row uses the format_cost_usd helper (a $-prefixed string).
     assert "$" in out
+
+
+# ---------- /retry: normal vs stream-interrupted ----------
+
+def test_retry_normal_pops_last_pair_and_queues_user_input(state):
+    """Default /retry: pops the trailing user/assistant pair and queues
+    the user message for resubmission — same behavior as before PR #106
+    landed the partial-content marker."""
+    state["history"] = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "what's 2+2?"},
+        {"role": "assistant", "content": "4"},
+    ]
+    cmd_retry(state)
+    assert state["_retry_input"] == "what's 2+2?"
+    assert state["history"] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+    ]
+
+
+def test_retry_on_interrupted_stream_resumes_instead_of_restarting(state):
+    """When the last assistant message carries the stream-interrupted
+    marker (left by PR #106), /retry should NOT pop the pair. Instead
+    it queues a "Continue." nudge so the model picks up from its own
+    partial reply rather than starting over and losing the work."""
+    state["history"] = [
+        {"role": "user", "content": "explain the loop"},
+        {
+            "role": "assistant",
+            "content": "It starts at run_agent which builds messages "
+            "[stream interrupted: fake-provider: connection lost]",
+        },
+    ]
+    cmd_retry(state)
+    assert state["_retry_input"] == "Continue."
+    # History intact — the partial reply stays in context so the model
+    # has its own breadcrumb of where it was.
+    assert len(state["history"]) == 2
+    assert "[stream interrupted" in state["history"][-1]["content"]
+
+
+def test_retry_no_history_is_noop(state):
+    cmd_retry(state)
+    assert "_retry_input" not in state
+    assert state["history"] == []
