@@ -405,6 +405,39 @@ def _blank_content(messages: list[dict], role: str) -> list[dict]:
     return [({**m, "content": ""} if m.get("role") == role else m) for m in messages]
 
 
+def _profile_cost_breakdown(
+    provider,
+    *,
+    system_tokens: int,
+    user_tokens: int,
+    assistant_tokens: int,
+    tools_tokens: int,
+) -> dict[str, float] | None:
+    """Per-role USD attribution for the next turn's prompt composition.
+
+    Uses input price for system/user/tool tokens (they enter the model as
+    prompt) and output price for assistant tokens (those were generated and
+    billed as completion when produced). Returns None when the active
+    (provider, model) isn't in the price table — callers skip the section
+    rather than print misleading zeros."""
+    from providers.pricing import lookup_price
+
+    price = lookup_price(provider.name, provider.model)
+    if price is None:
+        return None
+    sys_usd = system_tokens * price.input_per_mtok / 1_000_000
+    user_usd = user_tokens * price.input_per_mtok / 1_000_000
+    asst_usd = assistant_tokens * price.output_per_mtok / 1_000_000
+    tools_usd = tools_tokens * price.input_per_mtok / 1_000_000
+    return {
+        "system": sys_usd,
+        "user": user_usd,
+        "assistant": asst_usd,
+        "tools": tools_usd,
+        "total": sys_usd + user_usd + asst_usd + tools_usd,
+    }
+
+
 def cmd_profile(state: State, arg: str = "") -> None:
     """Per-role breakdown of what the next turn would send, using the
     active provider's real tokenizer.
@@ -465,6 +498,38 @@ def cmd_profile(state: State, arg: str = "") -> None:
     console.print(
         Panel("\n".join(lines), title=title, border_style=phosphor.DIM, padding=(1, 2))
     )
+
+    cost = _profile_cost_breakdown(
+        provider,
+        system_tokens=system_row,
+        user_tokens=user_row,
+        assistant_tokens=asst_row,
+        tools_tokens=tools_row,
+    )
+    if cost is not None:
+        from providers.pricing import format_cost_usd
+
+        total_usd = cost["total"]
+        cost_lines = []
+        for role in ("system", "user", "assistant", "tools"):
+            usd = cost[role]
+            share = (usd / total_usd * 100) if total_usd > 0 else 0.0
+            cost_lines.append(
+                f"  {role:<{_PROFILE_LABEL_LEN}} {format_cost_usd(usd):>10}  {share:>4.1f}%"
+            )
+        cost_lines.append("")
+        cost_lines.append(
+            f"  [bold]total:[/bold] {format_cost_usd(total_usd)}  "
+            f"[dim]· next-turn prompt at "
+            f"{provider.model} prices · assistant priced as output[/dim]"
+        )
+        cost_title = (
+            f"{phosphor.bracket('COST BREAKDOWN')} [{phosphor.DIM}]· "
+            f"{provider.name}:{provider.model}[/]"
+        )
+        console.print(
+            Panel("\n".join(cost_lines), title=cost_title, border_style=phosphor.DIM, padding=(1, 2))
+        )
 
 
 def cmd_eval(state: State, arg: str = "") -> None:

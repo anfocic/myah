@@ -190,3 +190,104 @@ def test_profile_marginal_rows_from_provider_counts(state, monkeypatch):
     # but the code path that does five count_tokens calls + subtraction
     # arithmetic must run cleanly for a realistic history.
     assert handle_slash("/profile", state) is True
+
+
+def test_profile_cost_breakdown_computation(state, monkeypatch):
+    """The per-role cost breakdown multiplies marginal token counts by the
+    active provider's input/output prices. assistant uses output price; the
+    other rows use input price. Verify with a priced provider and a fake
+    char-counting tokenizer."""
+    from providers.pricing import ModelPrice
+    from repl.commands import _profile_cost_breakdown
+
+    class CharProvider:
+        name = "openai"
+        model = "gpt-4o-mini"  # $0.15 / $0.60 per Mtok
+
+        def count_tokens(self, messages, tools=None):
+            total = sum(len(m.get("content") or "") for m in messages)
+            if tools:
+                total += 4
+            return total
+
+    provider = CharProvider()
+    monkeypatch.setattr(
+        "repl.commands.get_active_provider", lambda: provider
+    )
+
+    # Tokens-per-role from the marginal diff — pass through to the helper
+    # directly so the test pins the pricing math, not the row arithmetic
+    # (which the existing test covers).
+    breakdown = _profile_cost_breakdown(
+        provider,
+        system_tokens=1000,
+        user_tokens=2000,
+        assistant_tokens=500,
+        tools_tokens=300,
+    )
+    assert breakdown is not None
+    price = ModelPrice(0.15, 0.60)
+    expected_system = 1000 * price.input_per_mtok / 1_000_000
+    expected_user = 2000 * price.input_per_mtok / 1_000_000
+    expected_asst = 500 * price.output_per_mtok / 1_000_000
+    expected_tools = 300 * price.input_per_mtok / 1_000_000
+    assert breakdown["system"] == expected_system
+    assert breakdown["user"] == expected_user
+    assert breakdown["assistant"] == expected_asst
+    assert breakdown["tools"] == expected_tools
+    expected_total = expected_system + expected_user + expected_asst + expected_tools
+    assert breakdown["total"] == expected_total
+
+
+def test_profile_cost_breakdown_none_when_unpriced(monkeypatch):
+    """Unknown (provider, model) → no pricing → helper returns None so
+    /profile can skip the cost section entirely instead of printing zeros."""
+    from repl.commands import _profile_cost_breakdown
+
+    class UnpricedProvider:
+        name = "made-up"
+        model = "not-in-table"
+
+    assert _profile_cost_breakdown(
+        UnpricedProvider(),
+        system_tokens=100,
+        user_tokens=200,
+        assistant_tokens=50,
+        tools_tokens=10,
+    ) is None
+
+
+def test_profile_renders_cost_section_when_priced(state, monkeypatch, capsys):
+    """End-to-end: /profile with a priced provider prints a COST BREAKDOWN
+    section listing every role plus a total dollar figure."""
+    from rich.console import Console
+
+    from repl import commands
+
+    class CharProvider:
+        name = "openai"
+        model = "gpt-4o-mini"
+
+        def count_tokens(self, messages, tools=None):
+            total = sum(len(m.get("content") or "") for m in messages)
+            if tools:
+                total += 4
+            return total
+
+    monkeypatch.setattr(commands, "get_active_provider", lambda: CharProvider())
+    # Capture-friendly console: force_terminal=False, width wide enough that
+    # markup doesn't wrap mid-token.
+    monkeypatch.setattr(commands, "console", Console(force_terminal=False, width=200))
+
+    state["history"] = [
+        {"role": "user", "content": "hello there partner"},
+        {"role": "assistant", "content": "well hi back to ya"},
+    ]
+    assert handle_slash("/profile", state) is True
+    out = capsys.readouterr().out
+    assert "COST BREAKDOWN" in out
+    # Every role label should appear in the cost section output.
+    assert "assistant" in out
+    assert "system" in out
+    # Total row uses the format_cost_usd helper (a $-prefixed string).
+    assert "$" in out
