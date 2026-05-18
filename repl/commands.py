@@ -111,7 +111,7 @@ def cmd_config(state: State, arg: str = "") -> None:
 # Slash commands grouped for /help display. Dispatch still goes through the
 # flat SLASH_COMMANDS dict; this only controls how the list is presented.
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
-    ("info", ["/help", "/context", "/profile", "/stats", "/session", "/todos"]),
+    ("info", ["/help", "/context", "/profile", "/stats", "/session", "/todos", "/vars"]),
     ("control", ["/cd", "/config", "/clear", "/save-session"]),
     ("modes", ["/plan", "/debug"]),
     ("undo", ["/retry", "/compact", "/rewind"]),
@@ -147,6 +147,7 @@ def cmd_clear(state: State, arg: str = "") -> None:
     state["snapshots"].clear()  # else /rewind resurrects wiped history
     state["ctx_used"] = 0
     state["todos"] = []
+    state["vars"] = {}
     wipe_session()
     console.print("[dim]↳ history cleared (session file wiped too)[/dim]")
 
@@ -160,6 +161,7 @@ def _next_turn_messages(state: State) -> list[dict]:
         plan_mode=state.get("plan_mode", False),
         cwd=state.get("cwd"),
         todos=state.get("todos", []),
+        vars_dict=state.get("vars", {}),
     )
     return [{"role": "system", "content": sys_prompt}] + list(state["history"])
 
@@ -644,6 +646,37 @@ def cmd_todos(state: State, arg: str = "") -> None:
     render_todos(console, state.get("todos", []))
 
 
+def cmd_vars(state: State, arg: str = "") -> None:
+    """Show or wipe conversation variables. The named key-value store the
+    model populates via set_var / get_var / list_vars / unset_var — see
+    tools/vars.py.
+
+    Arg shapes:
+        /vars            — render current vars
+        /vars clear      — wipe all vars
+        /vars unset NAME — drop a single var
+    """
+    from tools.vars import format_vars
+
+    parts = arg.strip().split(maxsplit=1)
+    sub = parts[0] if parts else ""
+
+    if sub == "clear":
+        state["vars"] = {}
+        console.print("[dim]↳ vars cleared[/dim]")
+        return
+    if sub == "unset":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        vars_dict = state.get("vars", {}) or {}
+        if name and name in vars_dict:
+            del vars_dict[name]
+            console.print(f"[dim]↳ unset {name}[/dim]")
+        else:
+            console.print(f"[dim]↳ unset: {name!r} not set[/dim]")
+        return
+    console.print(format_vars(state.get("vars", {}) or {}))
+
+
 def cmd_save_session(state: State, arg: str = "") -> None:
     """Save the current conversation to the vault as a markdown archive.
 
@@ -764,6 +797,7 @@ SLASH_COMMANDS: dict = {
     "/eval": (cmd_eval, "run the eval suite (`/eval list` to list, `/eval <id>...` for a subset)"),
     "/save-session": (cmd_save_session, "archive current conversation to the vault (`/save-session <title>`)"),
     "/todos": (cmd_todos, "show the model's working todo list (`/todos clear` to wipe)"),
+    "/vars": (cmd_vars, "show conversation vars (`/vars clear` to wipe, `/vars unset NAME`)"),
 }
 
 

@@ -334,6 +334,7 @@ class ReplApp:
                 debug=self.state["debug"],
                 cwd=self.state["cwd"],
                 todos=self.state.get("todos", []),
+                vars_dict=self.state.get("vars", {}),
             )
             ctx_before_trim = self.state["ctx_used"]
             self.state["history"], dropped = trim_history(

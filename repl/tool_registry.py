@@ -35,6 +35,7 @@ from tools.harness import harness_info
 from tools.spec import get_registry
 from tools.subagent import spawn_subagent
 from tools.todo import TODO_WRITE_SCHEMA, todo_write
+from tools.vars import VAR_SCHEMAS, get_var, list_vars, set_var, unset_var
 
 # Special-case schemas for tools that need state/closure access and therefore
 # cannot be registered via the generic adapter pattern in their home modules.
@@ -73,6 +74,7 @@ _SPECIAL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     TODO_WRITE_SCHEMA,
+    *VAR_SCHEMAS,
     {
         "type": "function",
         "function": {
@@ -155,6 +157,14 @@ def make_execute_tool(state: State, permission_check=None):
                 return harness_info(state, TOOL_NAMES)
             elif name == "todo_write":
                 return todo_write(state, args.get("todos"))
+            elif name == "set_var":
+                return set_var(state, args.get("name"), args.get("value"))
+            elif name == "get_var":
+                return get_var(state, args.get("name"))
+            elif name == "unset_var":
+                return unset_var(state, args.get("name"))
+            elif name == "list_vars":
+                return list_vars(state)
             elif name == "spawn_subagent":
                 return spawn_subagent(
                     task=args["task"],

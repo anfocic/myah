@@ -41,6 +41,10 @@ class State(TypedDict):
     # place; system_prompt re-reads it every turn so the model always
     # sees the live state. See tools/todo.py.
     todos: list["Todo"]
+    # Conversation variables — a named string store the model populates
+    # via set_var / get_var / list_vars / unset_var. Session-scoped (not
+    # currently persisted across `--resume`). See tools/vars.py.
+    vars: dict[str, str]
 
 
 def new_state() -> State:
@@ -55,4 +59,5 @@ def new_state() -> State:
         "turn_history": deque(maxlen=TURN_HISTORY_MAX),
         "cwd": os.getcwd(),
         "todos": [],
+        "vars": {},
     }
