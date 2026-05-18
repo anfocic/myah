@@ -91,14 +91,18 @@ class AnthropicProvider(Provider):
             ) as r:
                 if r.status_code >= 400:
                     body = r.read().decode(errors="replace")
-                    raise ProviderError(f"HTTP {r.status_code}: {body[:500]}")
+                    transient = r.status_code == 429 or r.status_code >= 500
+                    raise ProviderError(
+                        f"HTTP {r.status_code}: {body[:500]}",
+                        retryable=transient,
+                    )
                 yield from _parse_sse(r.iter_lines())
         except httpx.ConnectError as e:
             raise ProviderError(
-                f"anthropic unreachable at {self._base}: {e}"
+                f"anthropic unreachable at {self._base}: {e}", retryable=True,
             ) from e
         except httpx.TimeoutException as e:
-            raise ProviderError(f"anthropic timeout: {e}") from e
+            raise ProviderError(f"anthropic timeout: {e}", retryable=True) from e
 
     def count_tokens(
         self,

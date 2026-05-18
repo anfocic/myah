@@ -81,4 +81,13 @@ class Provider(Protocol):
 class ProviderError(Exception):
     """Anything the adapter couldn't translate: connect refused, auth failure,
     malformed SSE, timeout, etc. One class is enough for a learning harness —
-    the message string carries the specifics."""
+    the message string carries the specifics.
+
+    `retryable` flags transient transport failures (connect refused, timeout,
+    HTTP 429 / 5xx) that the agent loop can safely retry with backoff. Default
+    is False so auth/parse failures surface immediately. Adapters set this when
+    they know a class of error is worth another attempt."""
+
+    def __init__(self, *args, retryable: bool = False):
+        super().__init__(*args)
+        self.retryable = retryable

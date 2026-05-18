@@ -14,6 +14,7 @@ upstairs in main.py / repl/."""
 
 import inspect
 import json
+import random
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,12 +25,28 @@ from agent.context import MICROCOMPACT_CTX_THRESHOLD, microcompact
 from agent.status import log_response
 from agent.system_prompt import build_system_prompt
 from agent.tokens import count_tokens, truncate_tool_result
-from config import MAX_AGENT_ITERATIONS, NUM_CTX, SPIN_WINDOW, get_context_size
+from config import (
+    MAX_AGENT_ITERATIONS,
+    MAX_PROVIDER_RETRIES,
+    NUM_CTX,
+    PROVIDER_RETRY_BASE_S,
+    SPIN_WINDOW,
+    get_context_size,
+)
 from display import StreamingMarkdown
 from providers import Provider, ProviderError, Usage, get_active_provider
 from providers.base import ToolCall
 from providers.pricing import compute_cost_usd
 from security import annotate_if_injected
+
+
+def _sleep_for_retry(attempt: int) -> None:
+    """Exponential backoff w/ small jitter. `attempt` is 1-indexed (the first
+    retry is attempt=1). Pulled out as a top-level function so tests can
+    monkeypatch it to a no-op and not sit through real sleeps."""
+    base = PROVIDER_RETRY_BASE_S * (2 ** (attempt - 1))
+    jitter = random.uniform(0, base * 0.1)
+    time.sleep(base + jitter)
 
 
 @dataclass
@@ -293,6 +310,11 @@ def run_agent(
     prompt_tokens_total = 0
     completion_tokens_total = 0
 
+    # Transient provider failures accumulate across every step in this
+    # run_agent call so stats reflect total wall-time spent on backoff,
+    # not just the last step's retry count.
+    provider_retries_total = 0
+
     # Loop guards (CONCEPTS §loop-control). Both are per-call — a fresh
     # user turn resets the counters so a long session doesn't gradually
     # starve the cap or accumulate phantom spin history.
@@ -332,14 +354,38 @@ def run_agent(
         if debug and console:
             _debug_dump_messages(console, messages)
 
-        turn = _stream_provider_turn(
-            provider,
-            messages,
-            tools,
-            NUM_CTX,
-            console=console,
-            start_time=start,
-        )
+        # Step-level retry: transient transport failures (network unreachable,
+        # timeout, HTTP 429 / 5xx) trip the loop with exponential backoff.
+        # Only retry when nothing visible was streamed yet — partial content
+        # in the user's terminal would duplicate on the retried call.
+        retries = 0
+        while True:
+            turn = _stream_provider_turn(
+                provider,
+                messages,
+                tools,
+                NUM_CTX,
+                console=console,
+                start_time=start,
+            )
+            err = turn.provider_error
+            partial_stream = bool(turn.content or turn.tool_calls)
+            can_retry = (
+                err is not None
+                and getattr(err, "retryable", False)
+                and not partial_stream
+                and retries < MAX_PROVIDER_RETRIES
+            )
+            if not can_retry:
+                break
+            retries += 1
+            provider_retries_total += 1
+            if console:
+                console.print(
+                    f"[dim yellow]↳ provider error ({provider.name}): {err}; "
+                    f"retry {retries}/{MAX_PROVIDER_RETRIES}[/dim yellow]"
+                )
+            _sleep_for_retry(retries)
 
         if turn.reasoning:
             reasoning_total.append(turn.reasoning)
@@ -363,6 +409,7 @@ def run_agent(
                     "tok_per_s": None,
                     "provider_error": f"{provider.name}: {turn.provider_error}",
                     "reasoning": "\n\n".join(reasoning_total),
+                    "provider_retries": provider_retries_total or None,
                 },
             )
 
@@ -471,6 +518,10 @@ def run_agent(
                 "prompt_tokens_total": prompt_tokens_total or None,
                 "completion_tokens_total": completion_tokens_total or None,
                 "cost_usd": cost_usd,
+                # None unless a transient transport failure forced at least
+                # one backoff this run — keeps the stats line tidy in the
+                # common success path.
+                "provider_retries": provider_retries_total or None,
             }
             return content, history, ctx_used, stats
 

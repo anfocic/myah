@@ -626,3 +626,166 @@ def test_stream_ttft_measured_on_first_content_not_reasoning():
     # roughly ≥50ms since start was shifted backward.
     assert result.ttft_ms is not None
     assert result.ttft_ms >= 50
+
+
+# ---------- step retries: transient provider errors ----------
+
+def _build_retrying_provider(failures: list[ProviderError], success_content: str):
+    """Build a provider that raises the given ProviderErrors on the first N
+    stream_chat calls, then yields a normal turn returning `success_content`."""
+    class RetryingProvider:
+        name = "fake-retry"
+        model = "fake-retry-v1"
+        context_size = 32768
+
+        def __init__(self):
+            self._pending_failures = list(failures)
+            self.call_count = 0
+
+        def stream_chat(self, messages, tools, num_ctx):
+            self.call_count += 1
+            if self._pending_failures:
+                err = self._pending_failures.pop(0)
+                raise err
+                yield  # pragma: no cover - keep it a generator
+            yield StreamChunk(content_delta=success_content)
+            yield StreamChunk(
+                done=True,
+                usage=Usage(prompt_tokens=10, completion_tokens=5),
+            )
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    return RetryingProvider()
+
+
+def _install_provider_instance(p):
+    """Swap the active provider to an arbitrary instance for one test."""
+    from providers import get_active_provider
+    original = get_active_provider()
+    set_active_provider(p)
+    return original
+
+
+def test_retryable_provider_error_triggers_retry_and_succeeds(monkeypatch):
+    """A retryable ProviderError (transient network/5xx) on the first turn
+    should be retried; the second attempt that succeeds must produce a
+    normal final response and surface the retry count in stats."""
+    monkeypatch.setattr("agent.loop._sleep_for_retry", lambda _attempt: None)
+
+    err = ProviderError("unreachable", retryable=True)
+    provider = _build_retrying_provider([err], success_content="after retry")
+    original = _install_provider_instance(provider)
+    try:
+        response, history, _ctx, stats = run_agent(
+            user_input="hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == "after retry"
+    assert provider.call_count == 2
+    assert stats.get("provider_retries") == 1
+    assert "provider_error" not in stats
+
+
+def test_non_retryable_provider_error_is_not_retried(monkeypatch):
+    """A ProviderError without retryable=True (auth, malformed payload,
+    parse error) should surface immediately — no backoff loop."""
+    sleeps: list[int] = []
+    monkeypatch.setattr("agent.loop._sleep_for_retry", lambda attempt: sleeps.append(attempt))
+
+    err = ProviderError("HTTP 401: bad key")  # default retryable=False
+    provider = _build_retrying_provider([err, err], success_content="never reached")
+    original = _install_provider_instance(provider)
+    try:
+        response, _history, _ctx, stats = run_agent(
+            user_input="hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == ""
+    assert provider.call_count == 1
+    assert sleeps == []
+    assert stats.get("provider_retries") in (None, 0)
+    assert "provider_error" in stats
+
+
+def test_retry_budget_exhausted_surfaces_final_error(monkeypatch):
+    """When every retry attempt also raises, we give up after the cap and
+    return the last provider_error in stats — not an empty success."""
+    monkeypatch.setattr("agent.loop._sleep_for_retry", lambda _attempt: None)
+    monkeypatch.setattr("agent.loop.MAX_PROVIDER_RETRIES", 2)
+
+    err = ProviderError("unreachable", retryable=True)
+    # 3 attempts (initial + 2 retries) all fail
+    provider = _build_retrying_provider([err, err, err], success_content="unreached")
+    original = _install_provider_instance(provider)
+    try:
+        response, _history, _ctx, stats = run_agent(
+            user_input="hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == ""
+    assert provider.call_count == 3  # initial + 2 retries
+    assert stats.get("provider_retries") == 2
+    assert "provider_error" in stats
+
+
+def test_retry_skipped_when_partial_content_already_streamed(monkeypatch):
+    """If the model already streamed visible content before the stream
+    broke, we cannot safely retry — duplicate output would land in the
+    user's terminal. Surface the error instead."""
+    monkeypatch.setattr("agent.loop._sleep_for_retry", lambda _attempt: None)
+
+    class PartialThenError:
+        name = "fake-partial"
+        model = "fake-partial-v1"
+        context_size = 32768
+
+        def __init__(self):
+            self.call_count = 0
+
+        def stream_chat(self, messages, tools, num_ctx):
+            self.call_count += 1
+            yield StreamChunk(content_delta="halfway there ")
+            raise ProviderError("dropped mid-stream", retryable=True)
+
+        def chat(self, messages, num_ctx):
+            raise NotImplementedError
+
+        def count_tokens(self, messages, tools=None):
+            return 0
+
+    provider = PartialThenError()
+    original = _install_provider_instance(provider)
+    try:
+        response, _history, _ctx, stats = run_agent(
+            user_input="hi",
+            tools=[],
+            execute_tool=_noop_execute_tool,
+            history=[],
+        )
+    finally:
+        set_active_provider(original)
+
+    assert response == ""
+    assert provider.call_count == 1
+    assert stats.get("provider_retries") in (None, 0)
+    assert "provider_error" in stats

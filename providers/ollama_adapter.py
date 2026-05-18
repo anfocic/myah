@@ -63,13 +63,17 @@ class OllamaProvider(Provider):
                 ),
             )
         except ConnectionError as e:
-            raise ProviderError(f"ollama unreachable: {e}") from e
+            raise ProviderError(f"ollama unreachable: {e}", retryable=True) from e
         except Exception as e:
             # Anything ollama's httpx wrapper raises — connect errors, timeouts,
             # protocol errors — surface as ProviderError so the agent loop has
-            # one catch clause.
+            # one catch clause. Transport-level httpx failures (Connect/Timeout/
+            # Read errors) are transient; the loop retries them with backoff.
             if e.__class__.__module__.startswith("httpx"):
-                raise ProviderError(f"ollama HTTP error: {e}") from e
+                transient = "Connect" in type(e).__name__ or "Timeout" in type(e).__name__
+                raise ProviderError(
+                    f"ollama HTTP error: {e}", retryable=transient,
+                ) from e
             raise
 
     def count_tokens(
