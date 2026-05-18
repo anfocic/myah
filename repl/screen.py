@@ -41,8 +41,8 @@ class _NullStatus:
     def __enter__(self) -> _NullStatus:
         return self
 
-    def __exit__(self, *exc) -> bool:
-        return False
+    def __exit__(self, *exc) -> None:
+        return None
 
 
 class RepaintBuffer:
@@ -170,7 +170,11 @@ class BufferConsole(Console):
     pane's width. `status()` is neutered to a `_NullStatus`."""
 
     def __init__(self, buffer: RepaintBuffer, *, width: int) -> None:
-        super().__init__(file=buffer, force_terminal=True, width=width)
+        # RepaintBuffer implements `write` + the methods rich actually calls;
+        # it isn't a full `IO[str]` (no .read, .seek, etc.). The substitution
+        # is the whole point of this class — rich consumes our buffer as its
+        # output sink — so the type widening is deliberate.
+        super().__init__(file=buffer, force_terminal=True, width=width)  # type: ignore[arg-type]
 
     def status(self, *args, **kwargs) -> _NullStatus:  # type: ignore[override]
         return _NullStatus()

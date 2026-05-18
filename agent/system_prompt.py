@@ -69,8 +69,24 @@ _SERVED_VIA = {
 }
 
 
+def _todos_block(todos: list | None) -> str | None:
+    """Render the live todo list as a `<todos>` block for the system prompt.
+
+    Returns None when the list is empty so the prompt stays compact. The list
+    is read once per turn; mid-turn mutations show up via the `todo_write`
+    tool result, not via this block."""
+    if not todos:
+        return None
+    lines: list[str] = []
+    for t in todos:
+        label = t.activeForm if t.status == "in_progress" else t.content
+        lines.append(f"[{t.status}] {label}")
+    return "<todos>\n" + "\n".join(lines) + "\n</todos>"
+
+
 def build_system_prompt_parts(
     plan_mode: bool = False, subagent: bool = False, cwd: str | None = None,
+    todos: list | None = None,
 ) -> dict[str, str]:
     """Return the system prompt as its named parts so callers like /profile
     can show a per-source token breakdown. `build_system_prompt` is a thin
@@ -91,6 +107,7 @@ Subagent rules:
 - Answer the task directly. Do NOT ask clarifying questions — you cannot; the parent is blocked waiting for your reply.
 - Be concise. One paragraph or a short list is usually right. No pleasantries, no "Would you like me to...".
 - Do not attempt to spawn further subagents; nested spawning is disabled.
+- If a tool call fails, do not retry the same call — try a different tool or different arguments.
 - Everything else applies: never fabricate tool output, never claim state changed without calling a tool, prefer surgical tools (edit_file, glob, grep) over shell (bash)."""
     else:
         persona = f"""You are Mia, the user's personal agent. You help manage their Obsidian vault, draft writing, research the web, and work with their files and code.
@@ -106,6 +123,8 @@ Rules:
 - Never return an empty response
 - For tasks needing multiple steps, do them one at a time
 - If the user gives a bare filename like 'search.py', call `glob` first to resolve it to a full path, then read/edit that path
+- If a tool call fails or returns an error, do NOT retry the exact same call. Read the error, then try a different approach: a different tool, different arguments, a narrower scope, or ask the user. Repeating the identical call rarely succeeds and burns the context window.
+- For multi-step work (3+ steps), call `todo_write` at the start to plan, then update the list as you go — exactly one item in `in_progress` at a time, mark items `completed` the moment you finish them (not in batches at the end). The current list is shown in the `<todos>` block in this prompt; do not duplicate items already there.
 - For a self-contained investigative subtask (e.g. "find every place X is called and summarize"), consider calling `spawn_subagent` — the subagent runs with a fresh context window, so its tool chatter doesn't eat yours.
 - The user keeps a personal Obsidian vault. Use `note_search` and `note_read` to recall what they have written before answering from memory, and `note_write` / `note_append` / `daily_note` to capture notes, drafts, and logs. Prefer `[[wikilinks]]` between related notes.
 - A separate project knowledge vault exists at `vault/` (sibling to `CLAUDE.md`). When working on this codebase, call `vault_search` to check for existing templates, documented decisions, or prior examples before implementing new features."""
@@ -128,6 +147,10 @@ Rules:
         except OSError:
             pass
 
+    todos_part = _todos_block(todos) if not subagent else None
+    if todos_part:
+        parts["todos"] = todos_part
+
     if plan_mode:
         parts["plan_mode"] = (
             "PLAN MODE is ON.\n\n"
@@ -149,6 +172,7 @@ Rules:
 
 def build_system_prompt(
     plan_mode: bool = False, subagent: bool = False, cwd: str | None = None,
+    todos: list | None = None,
 ) -> str:
     """Base persona + env block + (if the cwd has a CLAUDE.md) project
     context + (if plan mode) planning rules. Reads model + provider from
@@ -158,7 +182,11 @@ def build_system_prompt(
     git status line, and the CLAUDE.md lookup all reflect the model's
     current location after `cd`. None falls back to the process cwd.
 
+    `todos` is the live working-memory list (state["todos"]). Injected as
+    a `<todos>` block when non-empty so the model sees it every turn.
+    Subagents never see the parent's todos.
+
     `subagent=True` swaps the persona for a subagent-focused one: no
     pleasantries, no clarifying questions, return a concise final answer
     because the parent agent is waiting on a tool result. See §43."""
-    return "\n\n".join(build_system_prompt_parts(plan_mode, subagent, cwd).values())
+    return "\n\n".join(build_system_prompt_parts(plan_mode, subagent, cwd, todos).values())

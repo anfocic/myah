@@ -100,7 +100,7 @@ class ReplApp:
         # placeholder until then.
         self.buffer = RepaintBuffer()
         self.console = BufferConsole(self.buffer, width=120)
-        console._set_inner(self.console)  # every console.print site now → buffer
+        console._set_inner(self.console)  # type: ignore[attr-defined]  # proxy-only method (see repl/console.py)
 
         self.scroll = ScrollState()
         self.bridge = PermissionBridge()
@@ -333,6 +333,7 @@ class ReplApp:
                 on_tool_end=on_tool_end,
                 debug=self.state["debug"],
                 cwd=self.state["cwd"],
+                todos=self.state.get("todos", []),
             )
             ctx_before_trim = self.state["ctx_used"]
             self.state["history"], dropped = trim_history(

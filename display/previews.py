@@ -209,6 +209,54 @@ def _parse_web_results(result: str) -> list[tuple[int, str, str]]:
     return entries
 
 
+def render_todos(console: Console, todos: list) -> None:
+    """Phosphor checklist panel. Status drives both glyph and color:
+    pending dim, in_progress yellow + activeForm, completed accent.
+    `todos` is `list[tools.todo.Todo]` — duck-typed to avoid importing
+    the tool module at display load time."""
+    if not todos:
+        console.print(f"[{phosphor.DIM}](no todos)[/]")
+        return
+    lines: list[str] = []
+    for t in todos:
+        if t.status == "completed":
+            lines.append(f"[{phosphor.accent()}][x][/] [{phosphor.DIM}]{escape(t.content)}[/]")
+        elif t.status == "in_progress":
+            lines.append(f"[{phosphor.YELLOW}][~][/] [{phosphor.BRIGHT}]{escape(t.activeForm)}[/]")
+        else:
+            lines.append(f"[{phosphor.DIM}][ ][/] [{phosphor.WHITE}]{escape(t.content)}[/]")
+    title = f"{phosphor.bracket('TODOS')} [{phosphor.DIM}]· {len(todos)} item(s)[/]"
+    console.print(Panel("\n".join(lines), title=title, border_style=phosphor.DIM, padding=(0, 1)))
+
+
+def render_todo_result(console: Console, result: str) -> None:
+    """Render the string returned by todo_write back into a Phosphor panel.
+
+    The tool result encodes status by glyph prefix (`[ ]` / `[~]` / `[x]`),
+    so the display layer can recolor without re-reading state. Called from
+    on_tool_end so the user sees the live checklist after each call."""
+    body = result
+    if result.startswith("todo list updated:\n"):
+        body = result.split("\n", 1)[1]
+    if body == "todo list cleared":
+        console.print(f"[{phosphor.DIM}]↳ todo list cleared[/]")
+        return
+    lines: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("[x] "):
+            lines.append(f"[{phosphor.accent()}][x][/] [{phosphor.DIM}]{escape(line[4:])}[/]")
+        elif line.startswith("[~] "):
+            lines.append(f"[{phosphor.YELLOW}][~][/] [{phosphor.BRIGHT}]{escape(line[4:])}[/]")
+        elif line.startswith("[ ] "):
+            lines.append(f"[{phosphor.DIM}][ ][/] [{phosphor.WHITE}]{escape(line[4:])}[/]")
+        else:
+            lines.append(escape(line))
+    if not lines:
+        return
+    title = f"{phosphor.bracket('TODOS')} [{phosphor.DIM}]· {len(lines)} item(s)[/]"
+    console.print(Panel("\n".join(lines), title=title, border_style=phosphor.DIM, padding=(0, 1)))
+
+
 def render_web_search_results(console: Console, result: str) -> None:
     """Panel of clickable result titles (OSC 8) with the URL shown beneath."""
     entries = _parse_web_results(result)

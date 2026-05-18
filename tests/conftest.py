@@ -14,4 +14,5 @@ def state():
         "plan_mode": False,
         "debug": False,
         "snapshots": deque(maxlen=20),
+        "todos": [],
     }

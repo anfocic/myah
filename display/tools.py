@@ -12,6 +12,7 @@ from display.previews import (
     render_bash_output,
     render_diff,
     render_file_preview,
+    render_todo_result,
     render_web_search_results,
 )
 from repl.console import console
@@ -139,6 +140,15 @@ def _result_summary(name: str, args: dict, result: str) -> str:
         hits = len(_parse_web_results(result))
         result_label = "result" if hits == 1 else "results"
         return f"{hits} {result_label} · {args.get('query', '')}"
+    elif name == "todo_write":
+        if result == "todo list cleared":
+            return "cleared"
+        body = result.split("\n", 1)[1] if result.startswith("todo list updated:\n") else ""
+        count = sum(1 for line in body.splitlines() if line.startswith(("[ ] ", "[~] ", "[x] ")))
+        done = sum(1 for line in body.splitlines() if line.startswith("[x] "))
+        active = sum(1 for line in body.splitlines() if line.startswith("[~] "))
+        item_label = "item" if count == 1 else "items"
+        return f"{count} {item_label} · {done} done · {active} active"
 
     lines = result.splitlines()
     n = len(lines)
@@ -204,3 +214,5 @@ def on_tool_end(name: str, args: dict, result: str, ok: bool, meta: dict | None 
         render_bash_output(console, result)
     elif name == "web_search":
         render_web_search_results(console, result)
+    elif name == "todo_write":
+        render_todo_result(console, result)
