@@ -112,7 +112,7 @@ def cmd_config(state: State, arg: str = "") -> None:
 # flat SLASH_COMMANDS dict; this only controls how the list is presented.
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("info", ["/help", "/context", "/profile", "/stats", "/session", "/todos", "/vars"]),
-    ("control", ["/cd", "/config", "/clear", "/save-session"]),
+    ("control", ["/cd", "/config", "/clear", "/save-session", "/export"]),
     ("modes", ["/plan", "/debug"]),
     ("undo", ["/retry", "/compact", "/rewind"]),
     ("provider", ["/model", "/eval"]),
@@ -677,6 +677,31 @@ def cmd_vars(state: State, arg: str = "") -> None:
     console.print(format_vars(state.get("vars", {}) or {}))
 
 
+def cmd_export(state: State, arg: str = "") -> None:
+    """Export the current conversation as a plain markdown transcript to
+    an arbitrary path. Distinct from /save-session, which archives into
+    the personal vault with Obsidian frontmatter.
+
+    Arg shapes:
+        /export                   — timestamped default in cwd
+        /export <path>            — exact path (relative or absolute)
+        /export <dir>/            — timestamped default inside that dir
+    """
+    from repl.export import export_conversation
+
+    provider = get_active_provider()
+    result = export_conversation(
+        history=state.get("history", []),
+        model=provider.model,
+        provider=provider.name,
+        path=arg.strip() or None,
+    )
+    if result.startswith(("Error", "Refused")):
+        console.print(f"[dim red]↳ {result}[/dim red]")
+    else:
+        console.print(f"[dim]↳ exported to {result}[/dim]")
+
+
 def cmd_save_session(state: State, arg: str = "") -> None:
     """Save the current conversation to the vault as a markdown archive.
 
@@ -796,6 +821,7 @@ SLASH_COMMANDS: dict = {
     "/stats": (cmd_stats, "show the last turn's ctx/wall/ttft/rate"),
     "/eval": (cmd_eval, "run the eval suite (`/eval list` to list, `/eval <id>...` for a subset)"),
     "/save-session": (cmd_save_session, "archive current conversation to the vault (`/save-session <title>`)"),
+    "/export": (cmd_export, "export transcript as portable markdown (`/export [<path>]`)"),
     "/todos": (cmd_todos, "show the model's working todo list (`/todos clear` to wipe)"),
     "/vars": (cmd_vars, "show conversation vars (`/vars clear` to wipe, `/vars unset NAME`)"),
 }
