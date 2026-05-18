@@ -37,4 +37,9 @@ class _ConsoleProxy:
 
 # Pre-app default: a plain terminal Console. Good enough for imports, tests,
 # and the boot phase before `repl/app.py` swaps in the buffer-backed console.
-console = _ConsoleProxy(Console(force_terminal=True))
+#
+# Annotated as `Console` so call sites that pass `console` to render_* helpers
+# typed `(console: Console, ...)` type-check cleanly. The proxy forwards every
+# attribute via __getattr__ so it quacks like a Console at runtime; the type:
+# ignore tells mypy not to flag the deliberate widening.
+console: Console = _ConsoleProxy(Console(force_terminal=True))  # type: ignore[assignment]

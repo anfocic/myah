@@ -100,7 +100,7 @@ class ReplApp:
         # placeholder until then.
         self.buffer = RepaintBuffer()
         self.console = BufferConsole(self.buffer, width=120)
-        console._set_inner(self.console)  # every console.print site now → buffer
+        console._set_inner(self.console)  # type: ignore[attr-defined]  # proxy-only method (see repl/console.py)
 
         self.scroll = ScrollState()
         self.bridge = PermissionBridge()
